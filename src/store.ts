@@ -166,6 +166,7 @@ export class ConversationStore {
     if (conversation) {
       conversation.sessionId = sessionId;
       this.save();
+      this.notifyChange();
     }
   }
 

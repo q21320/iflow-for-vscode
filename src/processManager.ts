@@ -20,15 +20,29 @@ interface ProcessManagerConfig {
   port: number;
 }
 
+type SpawnFn = typeof cp.spawn;
+type WebSocketFactory = (url: string, options?: { handshakeTimeout?: number }) => WebSocket;
+
+interface ProcessManagerDependencies {
+  spawn?: SpawnFn;
+  createWebSocket?: WebSocketFactory;
+}
+
 export class ProcessManager {
   private managedProcess: cp.ChildProcess | null = null;
   // Auto-detection cache: undefined = not attempted, null = attempted & failed, object = success
   private _cachedAutoDetect: { nodePath: string; iflowScript: string } | null | undefined = undefined;
+  private readonly spawnProcess: SpawnFn;
+  private readonly createWebSocket: WebSocketFactory;
 
   constructor(
     private log: (message: string) => void,
-    private logInfo: (message: string) => void
-  ) {}
+    private logInfo: (message: string) => void,
+    deps: ProcessManagerDependencies = {},
+  ) {
+    this.spawnProcess = deps.spawn ?? cp.spawn;
+    this.createWebSocket = deps.createWebSocket ?? ((url, options) => new WebSocket(url, undefined, options));
+  }
 
   /** Whether a managed process is currently running. */
   get hasProcess(): boolean {
@@ -77,7 +91,7 @@ export class ProcessManager {
    * Determine how to start the iFlow process.
    * Tier 1: User-configured nodePath
    * Tier 2: Auto-detected from iflow CLI location
-   * Tier 3: null (fall back to SDK auto-start)
+   * Tier 3: null (caller decides how to proceed)
    */
   async resolveStartMode(config: ProcessManagerConfig): Promise<ManualStartInfo | null> {
     const logFn = this.logInfo;
@@ -104,8 +118,8 @@ export class ProcessManager {
       };
     }
 
-    // Tier 3: Let SDK auto-start handle it
-    this.log('No manual node path available, falling back to SDK auto-start');
+    // Tier 3: No manual start path available.
+    this.log('No manual node path available from user config or auto-detection');
     return null;
   }
 
@@ -140,7 +154,7 @@ export class ProcessManager {
       const stderrBuffer: string[] = [];
       const maxBufferLines = 20;
 
-      this.managedProcess = cp.spawn(nodePath, args, {
+      this.managedProcess = this.spawnProcess(nodePath, args, {
         cwd: cwd ?? process.cwd(),
         env: { ...process.env },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -156,7 +170,9 @@ export class ProcessManager {
       this.managedProcess.stdout?.on('data', (data: Buffer) => {
         const output = data.toString();
         stdoutBuffer.push(output);
-        if (stdoutBuffer.length > maxBufferLines) stdoutBuffer.shift();
+        if (stdoutBuffer.length > maxBufferLines) {
+          stdoutBuffer.shift();
+        }
         this.log(`[iFlow stdout] ${output}`);
         // Look for ready signal
         if (output.includes('listening') || output.includes('ready') || output.includes('port')) {
@@ -172,7 +188,9 @@ export class ProcessManager {
       this.managedProcess.stderr?.on('data', (data: Buffer) => {
         const output = data.toString();
         stderrBuffer.push(output);
-        if (stderrBuffer.length > maxBufferLines) stderrBuffer.shift();
+        if (stderrBuffer.length > maxBufferLines) {
+          stderrBuffer.shift();
+        }
         this.log(`[iFlow stderr] ${output}`);
         // Some CLIs output ready messages to stderr
         if (output.includes('listening') || output.includes('ready') || output.includes('Started')) {
@@ -223,7 +241,7 @@ export class ProcessManager {
           }
 
           try {
-            const ws = new WebSocket(wsUrl, undefined, { handshakeTimeout: 1000 });
+            const ws = this.createWebSocket(wsUrl, { handshakeTimeout: 1000 });
             const connectionResult = await new Promise<{ success: boolean; error?: Error }>((resolveWs) => {
               let isResolved = false;
 
@@ -269,7 +287,7 @@ export class ProcessManager {
                   cleanup();
                   resolveWs({ success: false, error: new Error('WebSocket timeout') });
                 }
-              }, 1500);
+              }, PROCESS_READY_FALLBACK_MS);
             });
 
             if (connectionResult.success) {

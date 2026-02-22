@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ConversationStore } from './store';
-import { IFlowClient } from './iflowClient';
+import { AcpClient } from './acpClient';
 import { AuthService } from './authService';
 import { WebviewMessage, ExtensionMessage, AttachedFile, IDEContext, Conversation } from './protocol';
 
@@ -22,7 +22,7 @@ export class WebviewHandler {
   private static sharedCliCheckInFlight: Promise<CliAvailabilityResult> | null = null;
 
   private readonly store: ConversationStore;
-  private readonly client: IFlowClient;
+  private readonly client: AcpClient;
   private readonly authService: AuthService;
   private readonly extensionUri: vscode.Uri;
   private webview: vscode.Webview | null = null;
@@ -30,13 +30,14 @@ export class WebviewHandler {
   private cliChecked = false;
   private planApprovedMode: 'smart' | 'default' | null = null;
   private planFeedbackText: string | null = null;
+  private syntheticPlanResolve: (() => void) | null = null;
   private selectionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly SELECTION_DEBOUNCE_MS = 300;
   private static readonly MAX_SELECTION_CHARS = 5000;
 
   constructor(extensionUri: vscode.Uri, globalState: vscode.Memento) {
     this.extensionUri = extensionUri;
-    this.client = new IFlowClient();
+    this.client = new AcpClient();
     this.authService = new AuthService();
     this.store = new ConversationStore(globalState, (state) => {
       this.postMessage({ type: 'stateUpdated', state });
@@ -202,10 +203,14 @@ export class WebviewHandler {
         if (message.requestId === -1) {
           // Synthetic approval: AI ended without calling exit_plan_mode.
           if (isApproved) {
+            this.planApprovedMode = message.option as 'smart' | 'default';
             this.store.setMode(message.option as 'smart' | 'default');
           } else if (message.option === 'feedback' && message.feedback) {
             this.planFeedbackText = message.feedback;
           }
+          // Unblock handleSendMessage's post-run block
+          this.syntheticPlanResolve?.();
+          this.syntheticPlanResolve = null;
         } else {
           if (isApproved) {
             this.planApprovedMode = message.option as 'smart' | 'default';
@@ -221,6 +226,9 @@ export class WebviewHandler {
         await this.client.cancel();
         this.store.setStreaming(false);
         this.store.endAssistantMessage();
+        // Unblock any pending synthetic plan approval
+        this.syntheticPlanResolve?.();
+        this.syntheticPlanResolve = null;
         break;
 
       case 'startAuth':
@@ -405,7 +413,7 @@ export class WebviewHandler {
       await this.checkCliAvailability();
       this.cliChecked = true;
       if (!this.store.getState().cliAvailable) {
-        const error = 'IFlow SDK is not available. Please ensure iFlow CLI is installed and accessible in your PATH.';
+        const error = 'IFlow CLI/ACP is not available. Please ensure iFlow CLI is installed and accessible in your PATH.';
         this.store.batchUpdate(() => {
           this.store.appendToAssistantMessage({ chunkType: 'error', message: error });
           this.store.endAssistantMessage();
@@ -503,6 +511,16 @@ export class WebviewHandler {
 
     // After a plan run completes, handle the user's plan approval choice.
     if (conversation.mode === 'plan' && runSucceeded) {
+      // If the AI didn't call exit_plan_mode, the synthetic approval UI was
+      // posted in onEnd.  Wait for the user to respond before checking
+      // planApprovedMode — this fixes the race where planApprovedMode was
+      // always null because run() resolved before user interaction.
+      if (!planApprovalEmitted) {
+        await new Promise<void>((resolve) => {
+          this.syntheticPlanResolve = resolve;
+        });
+      }
+
       if (this.planApprovedMode) {
         // User chose "Yes, smart mode" or "Yes, manual approval" → execute
         const targetMode = this.planApprovedMode;

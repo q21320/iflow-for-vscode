@@ -1,10 +1,8 @@
-// Pure mapping logic: converts SDK messages into StreamChunks for the webview.
+// Pure mapping logic: converts ACP session/update payloads into StreamChunks
+// for the webview. No SDK dependency.
 
 import { StreamChunk, AttachedFile, IDEContext } from './protocol';
 import { ThinkingParser } from './thinkingParser';
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type SDKModule = any;
 
 interface RunOptionsLike {
   prompt: string;
@@ -14,12 +12,62 @@ interface RunOptionsLike {
   cwd?: string;
 }
 
+interface ToolContentText {
+  type?: string;
+  text?: string;
+}
+
+interface ToolContentEntry {
+  type?: string;
+  content?: ToolContentText;
+  path?: string;
+  newText?: string;
+  oldText?: string | null;
+  fileDiff?: string;
+}
+
+interface ToolLocation {
+  path?: string;
+}
+
+interface SessionUpdateContent {
+  type?: string;
+  text?: string;
+}
+
+interface SessionUpdatePayload {
+  sessionUpdate?: string;
+  content?: unknown;
+  toolName?: string;
+  title?: string | null;
+  status?: string | null;
+  args?: Record<string, unknown>;
+  entries?: Array<{ content?: string; status?: string; priority?: string }>;
+  locations?: ToolLocation[] | null;
+  output?: unknown;
+  type?: string;
+  chunk?: { thought?: string; text?: string };
+  label?: string | null;
+  message?: string;
+}
+
+const LEGACY_MESSAGE_TYPE = {
+  ASSISTANT: 'assistant',
+  TOOL_CALL: 'tool_call',
+  PLAN: 'plan',
+  ERROR: 'error',
+  TASK_FINISH: 'task_finish',
+} as const;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 export class ChunkMapper {
   private parser: ThinkingParser | null = null;
   private inNativeThinking = false;
 
   constructor(
-    private getSDK: () => Promise<SDKModule>,
     private log: (message: string) => void
   ) {}
 
@@ -27,6 +75,22 @@ export class ChunkMapper {
   reset(): void {
     this.inNativeThinking = false;
     this.parser = new ThinkingParser();
+  }
+
+  /** Flush any buffered parser state at the end of a run. */
+  flushToChunks(): StreamChunk[] {
+    const chunks: StreamChunk[] = [];
+
+    if (this.parser) {
+      chunks.push(...this.parser.parse(''));
+    }
+
+    if (this.inNativeThinking) {
+      chunks.push({ chunkType: 'thinking_end' });
+      this.inNativeThinking = false;
+    }
+
+    return chunks;
   }
 
   /** Build the final prompt string with workspace and attached file context. */
@@ -75,11 +139,15 @@ export class ChunkMapper {
   }
 
   /**
-   * Enrich tool input by merging data from message.content and message.locations
-   * into the args object, so the webview can access file paths and content.
+   * Enrich tool input by merging data from args/content/locations into one
+   * object so the webview can render previews consistently.
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  enrichToolInput(message: any): Record<string, unknown> {
+  enrichToolInput(message: {
+    args?: Record<string, unknown>;
+    label?: string;
+    content?: unknown;
+    locations?: unknown;
+  }): Record<string, unknown> {
     const input: Record<string, unknown> = { ...(message.args || {}) };
 
     // If args is empty, try to parse from label (subagent format: "toolName: {json}")
@@ -90,42 +158,72 @@ export class ChunkMapper {
         if (jsonPart.startsWith('{')) {
           try {
             const parsed = JSON.parse(jsonPart);
-            if (typeof parsed === 'object' && parsed !== null) {
+            if (isObject(parsed)) {
               Object.assign(input, parsed);
             }
-          } catch { /* ignore parse errors */ }
+          } catch {
+            // ignore parse errors
+          }
         }
       }
     }
 
-    // Map absolute_path to file_path if not already set
+    // Map absolute_path to file_path if not already set.
     if (input.absolute_path && !input.file_path) {
       input.file_path = input.absolute_path;
     }
 
-    // Merge ToolCallContent fields (path, newText, oldText, markdown)
-    if (message.content) {
-      if (message.content.path && !input.file_path) {
-        input.file_path = message.content.path;
-      }
-      if (message.content.newText != null && !input.content) {
-        input.content = message.content.newText;
-      }
-      if (message.content.oldText != null && !input.old_string) {
-        input.old_string = message.content.oldText;
-      }
-      if (message.content.markdown != null) {
-        input._markdown = message.content.markdown;
-      }
-      if (message.content.type) {
-        input._contentType = message.content.type;
+    // New ACP shape: content is an array of tool result items.
+    if (Array.isArray(message.content)) {
+      for (const item of message.content as ToolContentEntry[]) {
+        if (!isObject(item)) {
+          continue;
+        }
+
+        if (typeof item.path === 'string' && !input.file_path) {
+          input.file_path = item.path;
+        }
+        if (item.newText !== undefined && input.content === undefined) {
+          input.content = item.newText;
+        }
+        if (item.oldText !== undefined && input.old_string === undefined) {
+          input.old_string = item.oldText;
+        }
+        if (typeof item.fileDiff === 'string') {
+          input.file_diff = item.fileDiff;
+        }
+
+        if (isObject(item.content) && typeof item.content.text === 'string') {
+          input._text = item.content.text;
+        }
       }
     }
 
-    // Merge first location as file_path
-    if (message.locations && message.locations.length > 0) {
-      const loc = message.locations[0];
-      if (loc.path && !input.file_path) {
+    // Legacy shape: single content object.
+    if (isObject(message.content) && !Array.isArray(message.content)) {
+      const content = message.content as Record<string, unknown>;
+
+      if (typeof content.path === 'string' && !input.file_path) {
+        input.file_path = content.path;
+      }
+      if (content.newText !== undefined && input.content === undefined) {
+        input.content = content.newText;
+      }
+      if (content.oldText !== undefined && input.old_string === undefined) {
+        input.old_string = content.oldText;
+      }
+      if (content.markdown !== undefined) {
+        input._markdown = content.markdown;
+      }
+      if (typeof content.type === 'string') {
+        input._contentType = content.type;
+      }
+    }
+
+    // Merge first location as file_path.
+    if (Array.isArray(message.locations) && message.locations.length > 0) {
+      const loc = message.locations[0] as ToolLocation;
+      if (typeof loc.path === 'string' && !input.file_path) {
         input.file_path = loc.path;
       }
     }
@@ -133,153 +231,225 @@ export class ChunkMapper {
     return input;
   }
 
-  /** Map a single SDK message into one or more StreamChunks. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async mapMessageToChunks(message: any): Promise<StreamChunk[]> {
-    const sdk = await this.getSDK();
+  private mapTextThroughParser(text: string): StreamChunk[] {
+    if (this.parser) {
+      return this.parser.parse(text);
+    }
+    return [{ chunkType: 'text', content: text }];
+  }
+
+  private extractToolOutput(content: unknown): string | null {
+    if (!Array.isArray(content)) {
+      return null;
+    }
+
+    const outputs: string[] = [];
+
+    for (const item of content as ToolContentEntry[]) {
+      if (!isObject(item)) {
+        continue;
+      }
+
+      if (item.type === 'content' && isObject(item.content) && item.content.type === 'text' && typeof item.content.text === 'string') {
+        outputs.push(item.content.text);
+        continue;
+      }
+
+      if (item.type === 'diff') {
+        if (typeof item.content === 'string') {
+          outputs.push(item.content);
+          continue;
+        }
+        if (typeof item.fileDiff === 'string') {
+          outputs.push(item.fileDiff);
+          continue;
+        }
+        if (typeof item.path === 'string') {
+          outputs.push(`Updated ${item.path}`);
+        }
+      }
+    }
+
+    return outputs.length > 0 ? outputs.join('\n') : null;
+  }
+
+  private normalizeToolLabel(label: unknown): string | undefined {
+    if (typeof label !== 'string') {
+      return undefined;
+    }
+
+    const colonIdx = label.indexOf(': ');
+    if (colonIdx > 0) {
+      const afterColon = label.substring(colonIdx + 2).trim();
+      if (afterColon.startsWith('{') || afterColon.startsWith('[')) {
+        return undefined;
+      }
+    }
+
+    return label;
+  }
+
+  private mapToolUpdate(update: SessionUpdatePayload): StreamChunk[] {
     const chunks: StreamChunk[] = [];
 
-    switch (message.type) {
-      case sdk.MessageType.ASSISTANT:
-        // Handle native thought chunks from SDK
-        if (message.chunk?.thought) {
+    const status = typeof update.status === 'string'
+      ? update.status
+      : update.sessionUpdate === 'tool_call'
+        ? 'pending'
+        : 'in_progress';
+
+    const toolName = update.toolName || (typeof update.title === 'string' ? update.title : 'unknown');
+    const enrichedInput = this.enrichToolInput({
+      args: update.args,
+      label: typeof update.title === 'string' ? update.title : undefined,
+      content: update.content,
+      locations: update.locations ?? undefined,
+    });
+    const cleanLabel = this.normalizeToolLabel(update.title);
+    const output = this.extractToolOutput(update.content)
+      ?? (typeof update.output === 'string' ? update.output : null);
+
+    if (status === 'pending' || status === 'in_progress') {
+      chunks.push({
+        chunkType: 'tool_start',
+        name: toolName,
+        input: enrichedInput,
+        label: cleanLabel,
+      });
+
+      if (output) {
+        chunks.push({ chunkType: 'tool_output', content: output });
+      }
+
+      return chunks;
+    }
+
+    if (status === 'completed' || status === 'failed') {
+      if (Object.keys(enrichedInput).length > 0) {
+        chunks.push({
+          chunkType: 'tool_start',
+          name: toolName,
+          input: enrichedInput,
+          label: cleanLabel,
+        });
+      }
+
+      if (output) {
+        chunks.push({ chunkType: 'tool_output', content: output });
+      }
+
+      chunks.push({
+        chunkType: 'tool_end',
+        status: status === 'completed' ? 'completed' : 'error',
+      });
+    }
+
+    return chunks;
+  }
+
+  /**
+   * Map a single ACP session/update payload into one or more StreamChunks.
+   */
+  mapUpdateToChunks(payload: unknown): StreamChunk[] {
+    const chunks: StreamChunk[] = [];
+
+    if (!isObject(payload)) {
+      return chunks;
+    }
+
+    const update = payload as SessionUpdatePayload;
+
+    // ACP 0.5.13 format: { sessionUpdate: ... }
+    switch (update.sessionUpdate) {
+      case 'agent_thought_chunk': {
+        const content = update.content as SessionUpdateContent | undefined;
+        if (content?.type === 'text' && typeof content.text === 'string') {
           if (!this.inNativeThinking) {
             chunks.push({ chunkType: 'thinking_start' });
             this.inNativeThinking = true;
           }
-          chunks.push({ chunkType: 'thinking_content', content: message.chunk.thought });
+          chunks.push({ chunkType: 'thinking_content', content: content.text });
         }
-        // Handle text chunks
-        if (message.chunk?.text) {
-          // End native thinking block if we were in one
+        return chunks;
+      }
+
+      case 'agent_message_chunk': {
+        const content = update.content as SessionUpdateContent | undefined;
+        if (content?.type === 'text' && typeof content.text === 'string') {
           if (this.inNativeThinking) {
             chunks.push({ chunkType: 'thinking_end' });
             this.inNativeThinking = false;
           }
-          if (this.parser) {
-            const parserChunks = this.parser.parse(message.chunk.text);
-            chunks.push(...parserChunks);
-          } else {
-            chunks.push({ chunkType: 'text', content: message.chunk.text });
-          }
+          chunks.push(...this.mapTextThroughParser(content.text));
         }
+        return chunks;
+      }
+
+      case 'tool_call':
+      case 'tool_call_update':
+        return this.mapToolUpdate(update);
+
+      case 'plan':
+        if (Array.isArray(update.entries)) {
+          chunks.push({
+            chunkType: 'plan',
+            entries: update.entries.map((entry) => ({
+              content: entry.content || '',
+              status: entry.status || 'pending',
+              priority: entry.priority || 'medium',
+            })),
+          });
+        }
+        return chunks;
+
+      case 'available_commands_update':
+      case 'user_message_chunk':
+        return chunks;
+
+      default:
         break;
+    }
 
-      case sdk.MessageType.TOOL_CALL: {
-        this.log(`TOOL_CALL: status=${message.status}, toolName=${message.toolName}, label=${message.label}, args=${JSON.stringify(message.args)}`);
+    // Backward compatibility path for old local test fixtures.
+    const legacyType = typeof update.type === 'string' ? update.type : undefined;
 
-        // Check if this is a permission confirmation request (injected by patchPermission)
-        if (message.confirmation && message._requestId !== undefined) {
-          // Emit tool_start so the tool appears as a running entry in the messages
-          chunks.push({
-            chunkType: 'tool_start',
-            name: message.toolName || message.label || 'unknown',
-            input: {},
-            label: message.label || undefined
-          });
-          // Emit tool_confirmation so the webview can show the approval UI in the composer
-          chunks.push({
-            chunkType: 'tool_confirmation',
-            requestId: message._requestId,
-            toolName: message.toolName || message.label || 'unknown',
-            description: message.confirmation.description || '',
-            confirmationType: message.confirmation.type || 'other',
-          });
-          break;
+    switch (legacyType) {
+      case LEGACY_MESSAGE_TYPE.ASSISTANT: {
+        const chunk = update.chunk as { thought?: string; text?: string } | undefined;
+        if (chunk?.thought) {
+          if (!this.inNativeThinking) {
+            chunks.push({ chunkType: 'thinking_start' });
+            this.inNativeThinking = true;
+          }
+          chunks.push({ chunkType: 'thinking_content', content: chunk.thought });
         }
 
-        // Check if this is a user question request (injected by patchQuestions)
-        if (message._questionRequest && message._requestId !== undefined) {
-          chunks.push({
-            chunkType: 'user_question',
-            requestId: message._requestId,
-            questions: message._questions,
-          });
-          break;
-        }
-
-        // Check if this is a plan approval request (injected by patchQuestions)
-        if (message._planApproval && message._requestId !== undefined) {
-          chunks.push({
-            chunkType: 'plan_approval',
-            requestId: message._requestId,
-            plan: message._plan,
-          });
-          break;
-        }
-
-        const enrichedInput = this.enrichToolInput(message);
-        const toolName = message.toolName || message.label || 'unknown';
-
-        // Clean up label: strip JSON args from subagent format "toolName: {json}"
-        let cleanLabel: string | undefined = message.label || undefined;
-        if (cleanLabel) {
-          const colonIdx = cleanLabel.indexOf(': ');
-          if (colonIdx > 0) {
-            const afterColon = cleanLabel.substring(colonIdx + 2).trim();
-            if (afterColon.startsWith('{') || afterColon.startsWith('[')) {
-              cleanLabel = undefined; // Let the renderer derive headline from input
-            }
+        if (chunk?.text) {
+          if (this.inNativeThinking) {
+            chunks.push({ chunkType: 'thinking_end' });
+            this.inNativeThinking = false;
           }
-        }
-
-        if (message.status === 'pending' || message.status === 'in_progress') {
-          chunks.push({
-            chunkType: 'tool_start',
-            name: toolName,
-            input: enrichedInput,
-            label: cleanLabel
-          });
-        } else if (message.status === 'completed') {
-          // Send an input update before completion (block is still 'running')
-          // so the preview renderer has access to content/locations data
-          if (Object.keys(enrichedInput).length > 0) {
-            chunks.push({
-              chunkType: 'tool_start',
-              name: toolName,
-              input: enrichedInput,
-              label: cleanLabel
-            });
-          }
-          if (message.output) {
-            chunks.push({
-              chunkType: 'tool_output',
-              content: message.output
-            });
-          }
-          chunks.push({
-            chunkType: 'tool_end',
-            status: 'completed'
-          });
-        } else if (message.status === 'failed') {
-          // Send an input update before failure so the renderer has access to data
-          if (Object.keys(enrichedInput).length > 0) {
-            chunks.push({
-              chunkType: 'tool_start',
-              name: toolName,
-              input: enrichedInput,
-              label: cleanLabel
-            });
-          }
-          if (message.output) {
-            chunks.push({
-              chunkType: 'tool_output',
-              content: message.output
-            });
-          }
-          chunks.push({
-            chunkType: 'tool_end',
-            status: 'error'
-          });
+          chunks.push(...this.mapTextThroughParser(chunk.text));
         }
         break;
       }
 
-      case sdk.MessageType.PLAN:
-        if (message.entries && Array.isArray(message.entries)) {
+      case LEGACY_MESSAGE_TYPE.TOOL_CALL:
+        return this.mapToolUpdate({
+          sessionUpdate: 'tool_call_update',
+          toolName: update.toolName as string | undefined,
+          title: update.label as string | null | undefined,
+          status: update.status as string | null | undefined,
+          args: update.args as Record<string, unknown> | undefined,
+          content: update.content,
+          locations: Array.isArray(update.locations) ? update.locations as ToolLocation[] : null,
+        });
+
+      case LEGACY_MESSAGE_TYPE.PLAN:
+        if (Array.isArray(update.entries)) {
           chunks.push({
             chunkType: 'plan',
-            entries: message.entries.map((entry: { content?: string; status?: string; priority?: string }) => ({
+            entries: (update.entries as Array<{ content?: string; status?: string; priority?: string }>).map((entry) => ({
               content: entry.content || '',
               status: entry.status || 'pending',
               priority: entry.priority || 'medium',
@@ -288,24 +458,22 @@ export class ChunkMapper {
         }
         break;
 
-      case sdk.MessageType.ERROR:
+      case LEGACY_MESSAGE_TYPE.ERROR:
         chunks.push({
           chunkType: 'error',
-          message: message.message || 'Unknown error'
+          message: typeof update.message === 'string' ? update.message : 'Unknown error',
         });
         break;
 
-      case sdk.MessageType.TASK_FINISH:
-        // Close any open native thinking block
+      case LEGACY_MESSAGE_TYPE.TASK_FINISH:
         if (this.inNativeThinking) {
           chunks.push({ chunkType: 'thinking_end' });
           this.inNativeThinking = false;
         }
-        // Task finish is handled in the run loop
         break;
 
       default:
-        this.log(`Unknown message type: ${message.type}`);
+        this.log(`Unknown session update payload: ${JSON.stringify(payload).substring(0, 200)}`);
     }
 
     return chunks;

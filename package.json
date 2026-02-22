@@ -150,6 +150,6 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
-    "@iflow-ai/iflow-cli-sdk": "^0.1.9"
+    "ws": "^8.18.0"
   }
 }
