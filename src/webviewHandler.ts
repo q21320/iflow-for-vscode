@@ -32,6 +32,7 @@ export class WebviewHandler {
   private planFeedbackText: string | null = null;
   private syntheticPlanResolve: (() => void) | null = null;
   private selectionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private outputChannel: vscode.OutputChannel | null = null;
   private static readonly SELECTION_DEBOUNCE_MS = 300;
   private static readonly MAX_SELECTION_CHARS = 5000;
 
@@ -106,6 +107,7 @@ export class WebviewHandler {
   }
 
   async handleMessage(message: WebviewMessage): Promise<void> {
+    this.debug(`Received webview message: ${message.type}`);
     switch (message.type) {
       case 'ready':
         // Always send current state immediately - no CLI check on startup.
@@ -259,19 +261,24 @@ export class WebviewHandler {
 
   private async getSharedCliAvailability(forceRefresh = false): Promise<CliAvailabilityResult> {
     if (forceRefresh) {
+      this.debug('CLI availability check: force refresh requested');
       WebviewHandler.invalidateSharedCliCheck();
     }
 
     if (WebviewHandler.isSharedCliCheckFresh() && WebviewHandler.sharedCliCheckCache) {
+      this.debug('CLI availability check: using shared cache');
       return WebviewHandler.sharedCliCheckCache.result;
     }
 
     if (WebviewHandler.sharedCliCheckInFlight) {
+      this.debug('CLI availability check: awaiting in-flight check');
       return WebviewHandler.sharedCliCheckInFlight;
     }
 
+    this.debug('CLI availability check: running client.checkAvailability()');
     WebviewHandler.sharedCliCheckInFlight = this.client.checkAvailability()
       .then((result) => {
+        this.debug(`CLI availability check complete: available=${result.version !== null}, version=${result.version ?? 'n/a'}`);
         WebviewHandler.cacheCliCheckResult(result);
         return result;
       })
@@ -284,15 +291,19 @@ export class WebviewHandler {
 
   private async checkCliAvailability(forceRefresh = false): Promise<void> {
     const result = await this.getSharedCliAvailability(forceRefresh);
+    this.debug(`Setting CLI status: available=${result.version !== null}, diagnostics=${result.diagnostics}`);
     this.store.setCliStatus(result.version !== null, result.version, result.diagnostics);
   }
 
   private async handleStartAuth(): Promise<void> {
     try {
+      this.debug('Starting OAuth login flow');
       await this.authService.startLogin();
       vscode.window.showInformationMessage('iFlow: Login successful');
+      this.debug('OAuth login flow completed successfully');
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+      this.debug(`OAuth login flow failed: ${msg}`);
       vscode.window.showErrorMessage(`iFlow login failed: ${msg}`);
     }
   }
@@ -304,6 +315,7 @@ export class WebviewHandler {
     });
 
     if (files) {
+      this.debug(`Picked files count: ${files.length}`);
       this.postMessage({
         type: 'pickedFiles',
         files: files.map(f => ({
@@ -325,6 +337,7 @@ export class WebviewHandler {
     const excludePattern = '**/node_modules/**,**/.git/**,**/dist/**,**/out/**';
 
     const files = await vscode.workspace.findFiles(pattern, excludePattern, 50);
+    this.debug(`Workspace file search: query="${query}", results=${files.length}`);
 
     this.postMessage({
       type: 'workspaceFiles',
@@ -338,6 +351,7 @@ export class WebviewHandler {
   private async handleReadFiles(paths: string[]): Promise<void> {
     const maxBytes = vscode.workspace.getConfiguration('iflow').get<number>('maxFileBytes', 80000);
     const files: AttachedFile[] = [];
+    this.debug(`Reading attached files: count=${paths.length}, maxBytes=${maxBytes}`);
 
     for (const filePath of paths) {
       try {
@@ -357,6 +371,7 @@ export class WebviewHandler {
 
         files.push({ path: filePath, content, truncated });
       } catch {
+        this.debug(`Failed to read attached file: ${filePath}`);
         files.push({ path: filePath, content: '[Error reading file]', truncated: false });
       }
     }
@@ -398,6 +413,7 @@ export class WebviewHandler {
   }
 
   private async handleSendMessage(content: string, attachedFiles: AttachedFile[], silent = false, ideContext?: IDEContext): Promise<void> {
+    this.debug(`handleSendMessage start: silent=${silent}, contentLength=${content.length}, attachedFiles=${attachedFiles.length}, hasIdeContext=${Boolean(ideContext)}`);
     // Immediately reflect "running" in UI so Enter has instant feedback.
     // Expensive checks (CLI probe/connect) happen after this optimistic state update.
     this.store.batchUpdate(() => {
@@ -410,6 +426,7 @@ export class WebviewHandler {
 
     // Lazy check: verify CLI availability on first send (or after previous failure)
     if (!this.cliChecked) {
+      this.debug('CLI has not been checked yet in this handler instance; checking now');
       await this.checkCliAvailability();
       this.cliChecked = true;
       if (!this.store.getState().cliAvailable) {
@@ -421,6 +438,7 @@ export class WebviewHandler {
         });
         this.postMessage({ type: 'streamError', error });
         this.cliChecked = false; // retry on next send
+        this.debug('Aborting send because CLI is unavailable');
         return;
       }
     }
@@ -429,7 +447,10 @@ export class WebviewHandler {
     await this.authService.ensureValidToken();
 
     const conversation = this.store.getCurrentConversation();
-    if (!conversation) return;
+    if (!conversation) {
+      this.debug('No active conversation found; dropping send request');
+      return;
+    }
 
     // Resolve workspace folder for this conversation
     const cwd = this.resolveWorkspaceFolder(conversation);
@@ -439,6 +460,7 @@ export class WebviewHandler {
     const fileAllowedDirs = this.getAllWorkspaceFolderPaths();
 
     const workspaceFiles = await this.getWorkspaceFileList(cwd);
+    this.debug(`Prepared run context: mode=${conversation.mode}, model=${conversation.model}, cwd=${cwd ?? 'n/a'}, workspaceFiles=${workspaceFiles.length}, allowedDirs=${fileAllowedDirs.length}`);
 
     // Track whether the AI called exit_plan_mode during this run
     let planApprovalEmitted = false;
@@ -468,6 +490,7 @@ export class WebviewHandler {
       },
       () => {
         runSucceeded = true;
+        this.debug('Run completed successfully');
         // Batch: end assistant + stop streaming → single stateUpdated
         this.store.batchUpdate(() => {
           this.store.endAssistantMessage();
@@ -489,6 +512,7 @@ export class WebviewHandler {
         }
       },
       (error) => {
+        this.debug(`Run failed: ${error}`);
         // Mark CLI as unavailable on connection errors so next send retries check
         if (error.includes('connect') || error.includes('ECONNREFUSED') || error.includes('not found') || error.includes('not available')) {
           WebviewHandler.cacheCliCheckResult({ version: null, diagnostics: error });
@@ -505,6 +529,7 @@ export class WebviewHandler {
       }
     ).then((returnedSessionId) => {
       if (returnedSessionId) {
+        this.debug(`Persisting ACP sessionId on conversation: ${returnedSessionId}`);
         this.store.setSessionId(returnedSessionId);
       }
     });
@@ -516,12 +541,14 @@ export class WebviewHandler {
       // planApprovedMode — this fixes the race where planApprovedMode was
       // always null because run() resolved before user interaction.
       if (!planApprovalEmitted) {
+        this.debug('Plan mode run ended without plan approval chunk; waiting for synthetic approval');
         await new Promise<void>((resolve) => {
           this.syntheticPlanResolve = resolve;
         });
       }
 
       if (this.planApprovedMode) {
+        this.debug(`Plan approved by user; switching to execution mode=${this.planApprovedMode}`);
         // User chose "Yes, smart mode" or "Yes, manual approval" → execute
         const targetMode = this.planApprovedMode;
         this.planApprovedMode = null;
@@ -532,6 +559,7 @@ export class WebviewHandler {
           true
         );
       } else if (this.planFeedbackText) {
+        this.debug('Plan feedback provided by user; sending feedback in plan mode');
         // User chose "Tell iFlow what to do instead" → send feedback in plan mode
         const feedback = this.planFeedbackText;
         this.planFeedbackText = null;
@@ -546,6 +574,7 @@ export class WebviewHandler {
       name: f.name,
     }));
     this.store.setWorkspaceFolders(folders);
+    this.debug(`Synced workspace folders: count=${folders.length}`);
   }
 
   private resolveWorkspaceFolder(conversation: Conversation): string | undefined {
@@ -604,6 +633,7 @@ export class WebviewHandler {
       }
     }
 
+    this.debug(`Pushing IDE context: activeFile=${context.activeFile?.path ?? 'none'}, hasSelection=${Boolean(context.selection)}`);
     this.postMessage({ type: 'ideContextChanged', context });
   }
 
@@ -664,6 +694,22 @@ export class WebviewHandler {
     this.disposeListeners();
     await this.client.dispose();
     this.authService.dispose();
+    this.debug('WebviewHandler disposed');
+    this.outputChannel?.dispose();
+    this.outputChannel = null;
     this.webview = null;
+  }
+
+  private debug(message: string): void {
+    if (!vscode.workspace.getConfiguration('iflow').get<boolean>('debugLogging', false)) {
+      return;
+    }
+
+    if (!this.outputChannel) {
+      this.outputChannel = vscode.window.createOutputChannel('IFlow Debug');
+    }
+
+    this.outputChannel.appendLine(`[WebviewHandler] ${message}`);
+    console.debug(`[IFlow][WebviewHandler] ${message}`);
   }
 }
