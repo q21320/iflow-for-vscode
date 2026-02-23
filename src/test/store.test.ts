@@ -22,6 +22,10 @@ class FakeMemento {
     }
     return Promise.resolve();
   }
+
+  snapshot(): unknown {
+    return this.value;
+  }
 }
 
 suite('ConversationStore', () => {
@@ -77,5 +81,143 @@ suite('ConversationStore', () => {
     const current = store.getCurrentConversation();
     assert.ok(current);
     assert.strictEqual(current?.model, 'DeepSeek-V3.2');
+  });
+
+  test('appendToAssistantMessage uses immutable updates and preserves previous snapshot', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    const store = new ConversationStore(memento as unknown as import('vscode').Memento, () => {});
+    store.newConversation();
+    store.startAssistantMessage();
+
+    const beforeConversation = store.getCurrentConversation();
+    assert.ok(beforeConversation);
+    const beforeMessage = beforeConversation!.messages[beforeConversation!.messages.length - 1];
+    assert.strictEqual(beforeMessage.content, '');
+    assert.strictEqual(beforeMessage.blocks.length, 0);
+
+    store.appendToAssistantMessage({ chunkType: 'text', content: 'hello' });
+
+    const afterConversation = store.getCurrentConversation();
+    assert.ok(afterConversation);
+    const afterMessage = afterConversation!.messages[afterConversation!.messages.length - 1];
+
+    assert.notStrictEqual(afterConversation, beforeConversation);
+    assert.notStrictEqual(afterMessage, beforeMessage);
+    assert.strictEqual(afterMessage.content, 'hello');
+    assert.strictEqual(beforeMessage.content, '');
+    assert.strictEqual(afterMessage.blocks.length, 1);
+    assert.strictEqual(beforeMessage.blocks.length, 0);
+  });
+
+  test('appendToAssistantMessage usage chunk updates context usage without mutating message blocks', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    const store = new ConversationStore(memento as unknown as import('vscode').Memento, () => {});
+    store.newConversation();
+    store.startAssistantMessage();
+
+    const before = store.getCurrentConversation();
+    assert.ok(before);
+    const beforeMessage = before!.messages[before!.messages.length - 1];
+    assert.strictEqual(beforeMessage.blocks.length, 0);
+
+    store.appendToAssistantMessage({
+      chunkType: 'usage',
+      promptTokens: 5000,
+      completionTokens: 250,
+      totalTokens: 5250,
+    });
+
+    const after = store.getCurrentConversation();
+    assert.ok(after);
+    const afterMessage = after!.messages[after!.messages.length - 1];
+    assert.strictEqual(afterMessage.blocks.length, 0);
+
+    const state = store.getState();
+    assert.ok(state.contextUsage);
+    assert.strictEqual(state.contextUsage?.usedTokens, 5000);
+    assert.strictEqual(state.contextUsage?.totalTokens, 200000);
+  });
+
+  test('batchUpdate emits a single state change notification', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    let notifyCount = 0;
+    const store = new ConversationStore(
+      memento as unknown as import('vscode').Memento,
+      () => { notifyCount += 1; }
+    );
+
+    store.batchUpdate(() => {
+      store.setMode('smart');
+      store.setThink(true);
+      store.setModel('GLM-5');
+    });
+
+    assert.strictEqual(notifyCount, 1);
+    const current = store.getCurrentConversation();
+    assert.ok(current);
+    assert.strictEqual(current?.mode, 'smart');
+    assert.strictEqual(current?.think, true);
+    assert.strictEqual(current?.model, 'GLM-5');
+  });
+
+  test('deleteConversation reselects first remaining conversation when deleting active', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    const store = new ConversationStore(memento as unknown as import('vscode').Memento, () => {});
+    const first = store.newConversation();
+    const second = store.newConversation();
+    store.switchConversation(first.id);
+
+    store.deleteConversation(first.id);
+
+    const current = store.getCurrentConversation();
+    assert.ok(current);
+    assert.strictEqual(current?.id, second.id);
+  });
+
+  test('clearCurrentConversation resets messages title and session id', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    const store = new ConversationStore(memento as unknown as import('vscode').Memento, () => {});
+    store.newConversation();
+    store.addUserMessage('hello world', []);
+    store.setSessionId('session-123');
+
+    store.clearCurrentConversation();
+    const current = store.getCurrentConversation();
+    assert.ok(current);
+    assert.strictEqual(current?.messages.length, 0);
+    assert.strictEqual(current?.title, 'New Conversation');
+    assert.strictEqual(current?.sessionId, undefined);
+  });
+
+  test('save persists conversation state into memento', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    const store = new ConversationStore(memento as unknown as import('vscode').Memento, () => {});
+    const conversation = store.newConversation();
+    store.switchConversation(conversation.id);
+    store.setMode('plan');
+
+    const snapshot = memento.snapshot() as { conversations: Array<{ id: string; mode: string }>; currentId: string | null };
+    assert.ok(snapshot);
+    assert.strictEqual(snapshot.currentId, conversation.id);
+    assert.strictEqual(snapshot.conversations.length, 1);
+    assert.strictEqual(snapshot.conversations[0].mode, 'plan');
   });
 });

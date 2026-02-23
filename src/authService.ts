@@ -6,7 +6,6 @@ import * as url from 'url';
 import * as vscode from 'vscode';
 import {
   OAUTH_CLIENT_ID,
-  OAUTH_CLIENT_SECRET,
   OAUTH_AUTH_URL,
   OAUTH_TOKEN_URL,
   OAUTH_USERINFO_URL,
@@ -16,9 +15,10 @@ import {
   SETTINGS_PATH,
   TOKEN_REFRESH_THRESHOLD_MS,
   OAUTH_CALLBACK_TIMEOUT_MS,
+  OAUTH_SECRET_STORAGE_KEY,
 } from './authConstants';
 
-/** Shape of the persisted OAuth credentials file (~/.iflow/oauth_creds.json). */
+/** Shape of persisted OAuth credentials. */
 export interface OAuthCredentials {
   readonly access_token: string;
   readonly refresh_token: string;
@@ -53,29 +53,37 @@ interface UserInfoResponse {
 export class AuthService {
   private callbackServer: http.Server | null = null;
   private outputChannel: vscode.OutputChannel | null = null;
+  private cachedCredentials: OAuthCredentials | null = null;
+  private migrationChecked = false;
+
+  constructor(private readonly secrets: vscode.SecretStorage) {}
 
   // ── Public API ────────────────────────────────────────────────
 
   /**
-   * Start the full OAuth login flow:
+   * Start full OAuth login flow with PKCE:
    * 1. Start local callback server on a dynamic port
-   * 2. Open browser to iflow.cn OAuth page
+   * 2. Open browser to iFlow OAuth page with code_challenge
    * 3. Wait for callback with authorization code
-   * 4. Exchange code for tokens
+   * 4. Exchange code for tokens using code_verifier (no client_secret)
    * 5. Fetch user info (including apiKey)
-   * 6. Save credentials to ~/.iflow/
+   * 6. Save credentials to SecretStorage
    */
   async startLogin(): Promise<void> {
+    await this.migrateLegacyCredentialsIfNeeded();
+
     // Prevent concurrent login flows
     if (this.callbackServer) {
       throw new Error('A login flow is already in progress');
     }
 
     const state = crypto.randomBytes(32).toString('hex');
+    const codeVerifier = this.generateCodeVerifier();
+    const codeChallenge = this.generateCodeChallenge(codeVerifier);
 
     let callbackResult: { code: string; port: number };
     try {
-      callbackResult = await this.startCallbackServer(state);
+      callbackResult = await this.startCallbackServer(state, codeChallenge);
     } finally {
       this.stopCallbackServer();
     }
@@ -84,12 +92,11 @@ export class AuthService {
     const redirectUri = `http://localhost:${port}${OAUTH_CALLBACK_PATH}`;
 
     // Exchange code for tokens
-    const tokens = await this.exchangeCodeForTokens(code, redirectUri);
+    const tokens = await this.exchangeCodeForTokens(code, redirectUri, codeVerifier);
 
     // Fetch user info
     const userInfo = await this.fetchUserInfo(tokens.access_token);
 
-    // Build credentials (immutable object)
     const credentials: OAuthCredentials = {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
@@ -104,22 +111,21 @@ export class AuthService {
       phone: userInfo.phone,
     };
 
-    // Persist credentials
-    this.writeCredentials(credentials);
+    await this.writeCredentials(credentials);
     this.updateSettings(credentials.apiKey);
-    this.log(`Login successful for user: ${credentials.userName}`);
+    this.logInfo(`Login successful for user: ${credentials.userName}`);
   }
 
   /** Clear stored OAuth credentials. */
-  logout(): void {
+  async logout(): Promise<void> {
     try {
-      if (fs.existsSync(OAUTH_CREDS_PATH)) {
-        fs.unlinkSync(OAUTH_CREDS_PATH);
-      }
+      this.cachedCredentials = null;
+      await this.secrets.delete(OAUTH_SECRET_STORAGE_KEY);
       this.clearSettings();
-      this.log('Logged out successfully');
+      this.removeLegacyCredentialsFile();
+      this.logInfo('Logged out successfully');
     } catch (err) {
-      this.log(`Logout error: ${err instanceof Error ? err.message : String(err)}`);
+      this.logError(`Logout error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -128,7 +134,9 @@ export class AuthService {
    * Returns true if auth is valid, false if not logged in or refresh failed.
    */
   async ensureValidToken(): Promise<boolean> {
-    const creds = this.readCredentials();
+    await this.migrateLegacyCredentialsIfNeeded();
+
+    const creds = await this.readCredentials();
     if (!creds) {
       return false;
     }
@@ -139,15 +147,13 @@ export class AuthService {
     }
 
     if (timeUntilExpiry <= 0) {
-      // Token fully expired — clear and force re-login
-      this.log('OAuth token expired, clearing credentials');
-      this.logout();
+      this.logWarn('OAuth token expired, clearing credentials');
+      await this.logout();
       return false;
     }
 
-    // Token expiring soon — attempt refresh
     try {
-      this.log('OAuth token expiring soon, refreshing...');
+      this.logInfo('OAuth token expiring soon, refreshing...');
       const newTokens = await this.refreshAccessToken(creds.refresh_token);
       const updatedCreds: OAuthCredentials = {
         ...creds,
@@ -157,19 +163,20 @@ export class AuthService {
         token_type: newTokens.token_type,
         scope: newTokens.scope,
       };
-      this.writeCredentials(updatedCreds);
+      await this.writeCredentials(updatedCreds);
       this.updateSettings(updatedCreds.apiKey);
-      this.log('OAuth token refreshed successfully');
+      this.logInfo('OAuth token refreshed successfully');
       return true;
     } catch (err) {
-      this.log(`Token refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logError(`Token refresh failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
 
-  /** Check if OAuth credentials exist on disk. */
-  isLoggedIn(): boolean {
-    return this.readCredentials() !== null;
+  /** Check if OAuth credentials exist. */
+  async isLoggedIn(): Promise<boolean> {
+    await this.migrateLegacyCredentialsIfNeeded();
+    return (await this.readCredentials()) !== null;
   }
 
   dispose(): void {
@@ -178,44 +185,130 @@ export class AuthService {
 
   // ── Private: Logging ──────────────────────────────────────────
 
-  private log(message: string): void {
+  private logInfo(message: string): void {
+    this.appendLog('INFO', message);
+  }
+
+  private logWarn(message: string): void {
+    this.appendLog('WARN', message);
+  }
+
+  private logError(message: string): void {
+    this.appendLog('ERROR', message);
+  }
+
+  private appendLog(level: 'INFO' | 'WARN' | 'ERROR', message: string): void {
     if (!this.outputChannel) {
       this.outputChannel = vscode.window.createOutputChannel('IFlow Auth');
     }
     const timestamp = new Date().toISOString();
-    this.outputChannel.appendLine(`[${timestamp}] ${message}`);
+    this.outputChannel.appendLine(`[${timestamp}] [${level}] ${message}`);
   }
 
-  // ── Private: Credential I/O ───────────────────────────────────
+  // ── Private: Secret storage + migration ───────────────────────
 
-  private readCredentials(): OAuthCredentials | null {
+  private async migrateLegacyCredentialsIfNeeded(): Promise<void> {
+    if (this.migrationChecked) {
+      return;
+    }
+    this.migrationChecked = true;
+
+    const legacy = this.readLegacyCredentialsFromFile();
+    if (!legacy) {
+      return;
+    }
+
+    const existing = await this.readCredentialsFromSecretStorage();
+    if (!existing) {
+      await this.writeCredentials(legacy);
+      this.logInfo('Migrated legacy OAuth credentials from file to SecretStorage');
+    } else {
+      this.logWarn('Legacy OAuth credentials file exists, but SecretStorage already has credentials; skipping overwrite');
+    }
+
+    this.removeLegacyCredentialsFile();
+  }
+
+  private async readCredentials(): Promise<OAuthCredentials | null> {
+    if (this.cachedCredentials) {
+      return this.cachedCredentials;
+    }
+
+    const creds = await this.readCredentialsFromSecretStorage();
+    if (creds) {
+      this.cachedCredentials = creds;
+    }
+    return creds;
+  }
+
+  private async readCredentialsFromSecretStorage(): Promise<OAuthCredentials | null> {
+    try {
+      const raw = await this.secrets.get(OAUTH_SECRET_STORAGE_KEY);
+      if (!raw) {
+        return null;
+      }
+
+      const parsed = JSON.parse(raw);
+      if (!this.isValidCredentials(parsed)) {
+        this.logWarn('SecretStorage credentials are malformed, clearing stored entry');
+        await this.secrets.delete(OAUTH_SECRET_STORAGE_KEY);
+        return null;
+      }
+
+      return parsed as OAuthCredentials;
+    } catch (err) {
+      this.logError(`Failed to read credentials from SecretStorage: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  private async writeCredentials(creds: OAuthCredentials): Promise<void> {
+    this.cachedCredentials = creds;
+    await this.secrets.store(OAUTH_SECRET_STORAGE_KEY, JSON.stringify(creds));
+  }
+
+  private readLegacyCredentialsFromFile(): OAuthCredentials | null {
     try {
       if (!fs.existsSync(OAUTH_CREDS_PATH)) {
         return null;
       }
       const content = fs.readFileSync(OAUTH_CREDS_PATH, 'utf-8');
       const parsed = JSON.parse(content);
-      // Validate required fields exist
-      if (!parsed.access_token || !parsed.refresh_token || !parsed.apiKey) {
+      if (!this.isValidCredentials(parsed)) {
+        this.logWarn('Legacy oauth_creds.json is malformed and will be removed');
         return null;
       }
       return parsed as OAuthCredentials;
-    } catch {
+    } catch (err) {
+      this.logError(`Failed to read legacy credentials file: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }
 
-  private writeCredentials(creds: OAuthCredentials): void {
-    if (!fs.existsSync(IFLOW_DIR)) {
-      fs.mkdirSync(IFLOW_DIR, { recursive: true });
-    }
-    const content = JSON.stringify(creds, null, 2);
-    if (process.platform === 'win32') {
-      fs.writeFileSync(OAUTH_CREDS_PATH, content, 'utf-8');
-    } else {
-      fs.writeFileSync(OAUTH_CREDS_PATH, content, { encoding: 'utf-8', mode: 0o600 });
+  private removeLegacyCredentialsFile(): void {
+    try {
+      if (fs.existsSync(OAUTH_CREDS_PATH)) {
+        fs.unlinkSync(OAUTH_CREDS_PATH);
+      }
+    } catch (err) {
+      this.logError(`Failed to remove legacy credentials file: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  private isValidCredentials(value: unknown): value is OAuthCredentials {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    const record = value as Record<string, unknown>;
+    return typeof record.access_token === 'string'
+      && typeof record.refresh_token === 'string'
+      && typeof record.expiry_date === 'number'
+      && typeof record.token_type === 'string'
+      && typeof record.scope === 'string'
+      && typeof record.apiKey === 'string';
+  }
+
+  // ── Private: settings.json I/O ────────────────────────────────
 
   private updateSettings(apiKey: string): void {
     try {
@@ -223,8 +316,8 @@ export class AuthService {
       if (fs.existsSync(SETTINGS_PATH)) {
         try {
           settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
-        } catch {
-          // If parse fails, start fresh
+        } catch (err) {
+          this.logWarn(`Failed to parse settings.json, recreating file: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       const updated = {
@@ -242,7 +335,7 @@ export class AuthService {
         fs.writeFileSync(SETTINGS_PATH, content, { encoding: 'utf-8', mode: 0o600 });
       }
     } catch (err) {
-      this.log(`Failed to update settings: ${err instanceof Error ? err.message : String(err)}`);
+      this.logError(`Failed to update settings: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -263,18 +356,36 @@ export class AuthService {
         fs.writeFileSync(SETTINGS_PATH, content, { encoding: 'utf-8', mode: 0o600 });
       }
     } catch (err) {
-      this.log(`Failed to clear settings: ${err instanceof Error ? err.message : String(err)}`);
+      this.logError(`Failed to clear settings: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  // ── Private: Callback Server ──────────────────────────────────
+  // ── Private: PKCE + callback server ───────────────────────────
+
+  private getOAuthClientId(): string {
+    return vscode.workspace.getConfiguration('iflow').get<string>('oauthClientId', OAUTH_CLIENT_ID);
+  }
+
+  private toBase64Url(input: Buffer): string {
+    return input
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+  }
+
+  private generateCodeVerifier(): string {
+    return this.toBase64Url(crypto.randomBytes(32));
+  }
+
+  private generateCodeChallenge(verifier: string): string {
+    return this.toBase64Url(crypto.createHash('sha256').update(verifier).digest());
+  }
 
   /**
-   * Start a local HTTP server on a dynamic port and wait for the OAuth callback.
-   * Opens the browser to the OAuth authorization URL.
-   * Returns the authorization code and the port the server is listening on.
+   * Start a local HTTP server on a dynamic port and wait for OAuth callback.
    */
-  private startCallbackServer(expectedState: string): Promise<{ code: string; port: number }> {
+  private startCallbackServer(expectedState: string, codeChallenge: string): Promise<{ code: string; port: number }> {
     return new Promise<{ code: string; port: number }>((resolve, reject) => {
       const server = http.createServer((req, res) => {
         const parsed = url.parse(req.url || '', true);
@@ -302,7 +413,6 @@ export class AuthService {
           return;
         }
 
-        // Success — respond to the browser
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`<html><body style="font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
           <div style="text-align:center;">
@@ -317,7 +427,6 @@ export class AuthService {
 
       this.callbackServer = server;
 
-      // Timeout — reject if callback never arrives
       const timeout = setTimeout(() => {
         this.stopCallbackServer();
         reject(new Error('OAuth callback timed out (2 minutes). Please try again.'));
@@ -325,16 +434,32 @@ export class AuthService {
 
       server.on('close', () => clearTimeout(timeout));
 
-      // Listen on port 0 (OS picks an available port)
       server.listen(0, 'localhost', () => {
         const addr = server.address() as { port: number };
         const port = addr.port;
-        this.log(`OAuth callback server listening on port ${port}`);
+        this.logInfo(`OAuth callback server listening on port ${port}`);
 
-        // Construct the OAuth URL and open the browser
-        const authUrl = `${OAUTH_AUTH_URL}?loginMethod=phone&type=phone&redirect=${encodeURIComponent(`http://localhost:${port}${OAUTH_CALLBACK_PATH}`)}&state=${expectedState}&client_id=${OAUTH_CLIENT_ID}`;
-        this.log(`Opening browser: ${authUrl}`);
-        vscode.env.openExternal(vscode.Uri.parse(authUrl));
+        const redirectUri = `http://localhost:${port}${OAUTH_CALLBACK_PATH}`;
+        const params = new url.URLSearchParams({
+          loginMethod: 'phone',
+          type: 'phone',
+          response_type: 'code',
+          redirect: redirectUri,
+          state: expectedState,
+          client_id: this.getOAuthClientId(),
+          code_challenge: codeChallenge,
+          code_challenge_method: 'S256',
+        });
+        const authUrl = `${OAUTH_AUTH_URL}?${params.toString()}`;
+
+        this.logInfo(`Opening browser: ${authUrl}`);
+        vscode.env.openExternal(vscode.Uri.parse(authUrl)).then((ok) => {
+          if (!ok) {
+            this.logWarn('Failed to open OAuth URL in browser');
+          }
+        }, (err: unknown) => {
+          this.logError(`Failed to open OAuth URL: ${err instanceof Error ? err.message : String(err)}`);
+        });
       });
 
       server.on('error', (err) => {
@@ -348,22 +473,26 @@ export class AuthService {
     if (this.callbackServer) {
       try {
         this.callbackServer.close();
-      } catch {
-        // Ignore close errors
+      } catch (err) {
+        this.logWarn(`Error closing callback server: ${err instanceof Error ? err.message : String(err)}`);
       }
       this.callbackServer = null;
     }
   }
 
-  // ── Private: OAuth API Calls ──────────────────────────────────
+  // ── Private: OAuth API calls ──────────────────────────────────
 
-  private async exchangeCodeForTokens(code: string, redirectUri: string): Promise<TokenResponse> {
+  private async exchangeCodeForTokens(
+    code: string,
+    redirectUri: string,
+    codeVerifier: string,
+  ): Promise<TokenResponse> {
     const response = await this.httpsPost(OAUTH_TOKEN_URL, {
       grant_type: 'authorization_code',
       code,
       redirect_uri: redirectUri,
-      client_id: OAUTH_CLIENT_ID,
-      client_secret: OAUTH_CLIENT_SECRET,
+      client_id: this.getOAuthClientId(),
+      code_verifier: codeVerifier,
     });
 
     if (!response.access_token) {
@@ -403,8 +532,7 @@ export class AuthService {
     const response = await this.httpsPost(OAUTH_TOKEN_URL, {
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
-      client_id: OAUTH_CLIENT_ID,
-      client_secret: OAUTH_CLIENT_SECRET,
+      client_id: this.getOAuthClientId(),
     });
 
     if (!response.access_token) {
@@ -420,7 +548,7 @@ export class AuthService {
     };
   }
 
-  // ── Private: HTTPS Helpers ────────────────────────────────────
+  // ── Private: HTTPS helpers ────────────────────────────────────
 
   private httpsPost(requestUrl: string, params: Record<string, string>): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
@@ -446,8 +574,8 @@ export class AuthService {
         res.on('end', () => {
           try {
             resolve(JSON.parse(data));
-          } catch {
-            reject(new Error(`Invalid JSON response: ${data.substring(0, 200)}`));
+          } catch (err) {
+            reject(new Error(`Invalid JSON response: ${data.substring(0, 200)}; parser error: ${err instanceof Error ? err.message : String(err)}`));
           }
         });
       });
@@ -474,8 +602,8 @@ export class AuthService {
         res.on('end', () => {
           try {
             resolve(JSON.parse(data));
-          } catch {
-            reject(new Error(`Invalid JSON response: ${data.substring(0, 200)}`));
+          } catch (err) {
+            reject(new Error(`Invalid JSON response: ${data.substring(0, 200)}; parser error: ${err instanceof Error ? err.message : String(err)}`));
           }
         });
       });

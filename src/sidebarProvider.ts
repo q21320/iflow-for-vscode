@@ -10,7 +10,8 @@ export class IFlowSidebarProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly globalState: vscode.Memento
+    private readonly globalState: vscode.Memento,
+    private readonly secrets: vscode.SecretStorage
   ) {}
 
   resolveWebviewView(
@@ -29,7 +30,7 @@ export class IFlowSidebarProvider implements vscode.WebviewViewProvider {
     };
 
     // Create handler for this sidebar view
-    this.handler = new WebviewHandler(this.extensionUri, this.globalState);
+    this.handler = new WebviewHandler(this.extensionUri, this.globalState, this.secrets);
     this.handler.bindWebview(webviewView.webview);
 
     // Set HTML content
@@ -37,7 +38,10 @@ export class IFlowSidebarProvider implements vscode.WebviewViewProvider {
 
     // Cleanup when view is disposed
     webviewView.onDidDispose(() => {
-      this.handler?.dispose().catch(() => {});
+      this.handler?.dispose().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[IFlow] Failed to dispose sidebar handler: ${message}`);
+      });
       this.handler = null;
       this.view = null;
     });

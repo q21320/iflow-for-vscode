@@ -12,7 +12,7 @@ export function activate(context: vscode.ExtensionContext) {
 		if (vscode.workspace.getConfiguration('iflow').get<boolean>('debugLogging', false)) {
 			console.debug('[IFlow] Command invoked: iflow-for-vscode.openPanel');
 		}
-		IFlowPanel.createOrShow(context.extensionUri, context.globalState);
+		IFlowPanel.createOrShow(context.extensionUri, context.globalState, context.secrets);
 	});
 	context.subscriptions.push(disposable);
 
@@ -27,7 +27,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Register both primary and secondary sidebar webview providers
 	const registerSidebarView = (viewType: string) => {
-		const sidebarProvider = new IFlowSidebarProvider(context.extensionUri, context.globalState);
+		const sidebarProvider = new IFlowSidebarProvider(
+			context.extensionUri,
+			context.globalState,
+			context.secrets
+		);
 		const sidebarDisposable = vscode.window.registerWebviewViewProvider(
 			viewType,
 			sidebarProvider,

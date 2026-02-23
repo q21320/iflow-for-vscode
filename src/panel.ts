@@ -8,7 +8,11 @@ export class IFlowPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly handler: WebviewHandler;
 
-  public static createOrShow(extensionUri: vscode.Uri, globalState: vscode.Memento): void {
+  public static createOrShow(
+    extensionUri: vscode.Uri,
+    globalState: vscode.Memento,
+    secrets: vscode.SecretStorage
+  ): void {
     // If we already have a panel, show it
     if (IFlowPanel.currentPanel) {
       IFlowPanel.currentPanel.panel.reveal();
@@ -31,7 +35,7 @@ export class IFlowPanel {
       }
     );
 
-    IFlowPanel.currentPanel = new IFlowPanel(panel, extensionUri, globalState);
+    IFlowPanel.currentPanel = new IFlowPanel(panel, extensionUri, globalState, secrets);
 
     // Auto-lock the editor group so the panel stays pinned
     setTimeout(() => {
@@ -42,14 +46,15 @@ export class IFlowPanel {
   private constructor(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
-    globalState: vscode.Memento
+    globalState: vscode.Memento,
+    secrets: vscode.SecretStorage
   ) {
     this.panel = panel;
 
     // Set the panel tab icon to iflow_favicon.svg
     this.panel.iconPath = vscode.Uri.joinPath(extensionUri, 'media', 'iflow_favicon.svg');
 
-    this.handler = new WebviewHandler(extensionUri, globalState);
+    this.handler = new WebviewHandler(extensionUri, globalState, secrets);
 
     // Bind handler to this webview
     this.handler.bindWebview(panel.webview);
@@ -65,7 +70,10 @@ export class IFlowPanel {
     IFlowPanel.currentPanel = undefined;
 
     // Full cleanup
-    this.handler.dispose().catch(() => {});
+    this.handler.dispose().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[IFlow] Failed to dispose panel handler: ${message}`);
+    });
 
     // Clean up resources
     this.panel.dispose();

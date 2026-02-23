@@ -190,6 +190,94 @@ suite('AcpClient', () => {
     assert.ok(fakeProtocol.requests.some(r => r.method === 'session/set_think'));
   });
 
+  test('run emits usage chunk when session/prompt result includes usage metadata', async () => {
+    const chunks: any[] = [];
+
+    const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
+    fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
+      if (method === 'session/prompt') {
+        fakeProtocol.simulateUpdate({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Hello!' },
+        });
+        return {
+          stopReason: 'end_turn',
+          usageMetadata: {
+            promptTokenCount: 321,
+            candidatesTokenCount: 12,
+            totalTokenCount: 333,
+          },
+        };
+      }
+      return originalSendRequest(method, params);
+    };
+
+    await client.run(
+      {
+        prompt: 'hello',
+        attachedFiles: [],
+        mode: 'default',
+        think: false,
+        model: 'GLM-4.7' as any,
+      },
+      (chunk) => chunks.push(chunk),
+      () => {},
+      () => {},
+    );
+
+    const usage = chunks.find((c) => c.chunkType === 'usage');
+    assert.ok(usage);
+    assert.strictEqual(usage?.promptTokens, 321);
+    assert.strictEqual(usage?.completionTokens, 12);
+    assert.strictEqual(usage?.totalTokens, 333);
+  });
+
+  test('run emits usage chunk when usage is on session/update envelope', async () => {
+    const chunks: any[] = [];
+
+    const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
+    fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
+      if (method === 'session/prompt') {
+        const handler = fakeProtocol.notificationHandlers.get('session/update');
+        if (handler) {
+          handler({
+            sessionId: 'test-session-123',
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'Hello!' },
+            },
+            usageMetadata: {
+              promptTokenCount: 777,
+              candidatesTokenCount: 21,
+              totalTokenCount: 798,
+            },
+          });
+        }
+        return { stopReason: 'end_turn' };
+      }
+      return originalSendRequest(method, params);
+    };
+
+    await client.run(
+      {
+        prompt: 'hello',
+        attachedFiles: [],
+        mode: 'default',
+        think: false,
+        model: 'GLM-4.7' as any,
+      },
+      (chunk) => chunks.push(chunk),
+      () => {},
+      () => {},
+    );
+
+    const usage = chunks.find((c) => c.chunkType === 'usage');
+    assert.ok(usage);
+    assert.strictEqual(usage?.promptTokens, 777);
+    assert.strictEqual(usage?.completionTokens, 21);
+    assert.strictEqual(usage?.totalTokens, 798);
+  });
+
   test('run sends thinkConfig when thinking is enabled', async () => {
     await client.run(
       {
@@ -208,6 +296,32 @@ suite('AcpClient', () => {
     assert.ok(thinkRequest);
     assert.strictEqual((thinkRequest?.params as any)?.thinkEnabled, true);
     assert.strictEqual((thinkRequest?.params as any)?.thinkConfig, 'think');
+  });
+
+  test('run succeeds without explicit fileAllowedDirs by falling back to cwd', async () => {
+    let ended = false;
+    let error: string | null = null;
+
+    await client.run(
+      {
+        prompt: 'fallback dirs',
+        attachedFiles: [],
+        mode: 'default',
+        think: false,
+        model: 'GLM-4.7' as any,
+        cwd: '/tmp/workspace',
+      },
+      () => {},
+      () => {
+        ended = true;
+      },
+      (err) => {
+        error = err;
+      },
+    );
+
+    assert.strictEqual(error, null);
+    assert.strictEqual(ended, true);
   });
 
   test('permission server method emits tool_confirmation and uses server optionId', async () => {

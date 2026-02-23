@@ -5,43 +5,62 @@ import { ConversationStore } from './store';
 import { AcpClient } from './acpClient';
 import { AuthService } from './authService';
 import { WebviewMessage, ExtensionMessage, AttachedFile, IDEContext, Conversation } from './protocol';
-
-interface CliAvailabilityResult {
-  version: string | null;
-  diagnostics: string;
-}
+import { CliStatusService } from './webview/cliStatusService';
+import { IDEContextService } from './webview/ideContextService';
+import { PlanModeOrchestrator } from './webview/planModeOrchestrator';
+import { PlanApprovalCoordinator } from './webview/planApprovalCoordinator';
+import { SendMessagePipeline } from './webview/sendMessagePipeline';
+import { buildWebviewHtml } from './webview/htmlTemplate';
+import { routeWebviewMessage } from './webview/messageRouter';
 
 /**
  * Shared handler for webview message processing, CLI checking, and HTML generation.
  * Used by both IFlowPanel (independent panel) and IFlowSidebarProvider (sidebar view).
  */
 export class WebviewHandler {
-  private static readonly CLI_CHECK_SUCCESS_TTL_MS = 2 * 60 * 1000;
-  private static readonly CLI_CHECK_FAILURE_TTL_MS = 15 * 1000;
-  private static sharedCliCheckCache: { result: CliAvailabilityResult; checkedAt: number } | null = null;
-  private static sharedCliCheckInFlight: Promise<CliAvailabilityResult> | null = null;
-
   private readonly store: ConversationStore;
   private readonly client: AcpClient;
   private readonly authService: AuthService;
+  private readonly cliStatusService: CliStatusService;
+  private readonly planApprovalCoordinator: PlanApprovalCoordinator;
+  private readonly sendMessagePipeline: SendMessagePipeline;
   private readonly extensionUri: vscode.Uri;
   private webview: vscode.Webview | null = null;
   private disposables: vscode.Disposable[] = [];
   private cliChecked = false;
-  private planApprovedMode: 'smart' | 'default' | null = null;
-  private planFeedbackText: string | null = null;
-  private syntheticPlanResolve: (() => void) | null = null;
   private selectionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private outputChannel: vscode.OutputChannel | null = null;
   private static readonly SELECTION_DEBOUNCE_MS = 300;
   private static readonly MAX_SELECTION_CHARS = 5000;
 
-  constructor(extensionUri: vscode.Uri, globalState: vscode.Memento) {
+  constructor(extensionUri: vscode.Uri, globalState: vscode.Memento, secrets: vscode.SecretStorage) {
     this.extensionUri = extensionUri;
     this.client = new AcpClient();
-    this.authService = new AuthService();
+    this.authService = new AuthService(secrets);
     this.store = new ConversationStore(globalState, (state) => {
       this.postMessage({ type: 'stateUpdated', state });
+    });
+
+    this.cliStatusService = new CliStatusService(
+      this.client,
+      (result) => this.store.setCliStatus(result.version !== null, result.version, result.diagnostics),
+      (message) => this.debug(message),
+    );
+    this.planApprovalCoordinator = new PlanApprovalCoordinator(new PlanModeOrchestrator());
+
+    this.sendMessagePipeline = new SendMessagePipeline({
+      store: this.store,
+      client: this.client,
+      authService: this.authService,
+      postMessage: (message) => this.postMessage(message),
+      checkCliForSend: async () => this.checkCliForSend(),
+      markCliUnavailable: (diagnostics) => this.markCliUnavailable(diagnostics),
+      resolveWorkspaceFolder: (conversation) => this.resolveWorkspaceFolder(conversation),
+      getAllWorkspaceFolderPaths: () => this.getAllWorkspaceFolderPaths(),
+      getWorkspaceFileList: async (cwd) => this.getWorkspaceFileList(cwd),
+      planApprovalCoordinator: this.planApprovalCoordinator,
+      debug: (message) => this.debug(message),
+      setSessionId: (sessionId) => this.store.setSessionId(sessionId),
     });
   }
 
@@ -68,7 +87,7 @@ export class WebviewHandler {
             e.affectsConfiguration('iflow.port') ||
             e.affectsConfiguration('iflow.timeout')) {
           await this.client.dispose();
-          WebviewHandler.invalidateSharedCliCheck();
+          CliStatusService.invalidateSharedCliCheck();
           this.cliChecked = false;
           await this.checkCliAvailability(true);
         }
@@ -108,191 +127,77 @@ export class WebviewHandler {
 
   async handleMessage(message: WebviewMessage): Promise<void> {
     this.debug(`Received webview message: ${message.type}`);
-    switch (message.type) {
-      case 'ready':
-        // Always send current state immediately - no CLI check on startup.
-        // CLI availability is checked lazily when user sends a message.
+    await routeWebviewMessage(message, {
+      ready: async () => {
         this.syncWorkspaceFolders();
         this.postMessage({ type: 'stateUpdated', state: this.store.getState() });
         this.pushIDEContext();
-        break;
-
-      case 'recheckCli':
+      },
+      recheckCli: async () => {
         await this.client.dispose();
         this.client.clearAutoDetectCache();
-        WebviewHandler.invalidateSharedCliCheck();
+        CliStatusService.invalidateSharedCliCheck();
         this.cliChecked = false;
         await this.checkCliAvailability(true);
-        break;
-
-      case 'pickFiles':
-        await this.handlePickFiles();
-        break;
-
-      case 'listWorkspaceFiles':
-        await this.handleListWorkspaceFiles(message.query);
-        break;
-
-      case 'readFiles':
-        await this.handleReadFiles(message.paths);
-        break;
-
-      case 'openFile':
-        await this.handleOpenFile(message.path);
-        break;
-
-      case 'newConversation': {
+      },
+      pickFiles: async () => this.handlePickFiles(),
+      listWorkspaceFiles: async (msg) => this.handleListWorkspaceFiles(msg.query),
+      readFiles: async (msg) => this.handleReadFiles(msg.paths),
+      openFile: async (msg) => this.handleOpenFile(msg.path),
+      newConversation: async () => {
         const activeUri = vscode.window.activeTextEditor?.document.uri;
         const folder = activeUri?.scheme === 'file'
           ? vscode.workspace.getWorkspaceFolder(activeUri)
           : undefined;
         this.store.newConversation(folder?.uri.fsPath);
-        break;
-      }
-
-      case 'switchConversation':
-        this.store.switchConversation(message.conversationId);
-        break;
-
-      case 'deleteConversation':
-        this.store.deleteConversation(message.conversationId);
-        break;
-
-      case 'clearConversation':
-        this.store.clearCurrentConversation();
-        break;
-
-      case 'setMode':
-        this.store.setMode(message.mode);
-        break;
-
-      case 'setThink':
-        this.store.setThink(message.enabled);
-        break;
-
-      case 'setModel':
-        this.store.setModel(message.model);
-        break;
-
-      case 'setWorkspaceFolder':
-        this.store.setConversationWorkspaceFolder(message.uri);
-        break;
-
-      case 'sendMessage':
-        await this.handleSendMessage(message.content, message.attachedFiles, false, message.ideContext);
-        break;
-
-      case 'toolApproval':
-        if (message.outcome === 'reject') {
-          await this.client.rejectToolCall(message.requestId);
-          // Terminate the entire conversation, equivalent to pressing stop
+      },
+      switchConversation: async (msg) => this.store.switchConversation(msg.conversationId),
+      deleteConversation: async (msg) => this.store.deleteConversation(msg.conversationId),
+      clearConversation: async () => this.store.clearCurrentConversation(),
+      setMode: async (msg) => this.store.setMode(msg.mode),
+      setThink: async (msg) => this.store.setThink(msg.enabled),
+      setModel: async (msg) => this.store.setModel(msg.model),
+      setWorkspaceFolder: async (msg) => this.store.setConversationWorkspaceFolder(msg.uri),
+      sendMessage: async (msg) => this.handleSendMessage(msg.content, msg.attachedFiles, false, msg.ideContext),
+      toolApproval: async (msg) => {
+        if (msg.outcome === 'reject') {
+          await this.client.rejectToolCall(msg.requestId);
           await this.client.cancel();
           this.store.batchUpdate(() => {
             this.store.endAssistantMessage();
             this.store.setStreaming(false);
           });
-        } else {
-          await this.client.approveToolCall(message.requestId, message.outcome);
+          return;
         }
-        break;
-
-      case 'questionAnswer':
-        await this.client.answerQuestions(message.requestId, message.answers);
-        break;
-
-      case 'planApproval': {
-        const isApproved = message.option === 'smart' || message.option === 'default';
-        if (message.requestId === -1) {
-          // Synthetic approval: AI ended without calling exit_plan_mode.
-          if (isApproved) {
-            this.planApprovedMode = message.option as 'smart' | 'default';
-            this.store.setMode(message.option as 'smart' | 'default');
-          } else if (message.option === 'feedback' && message.feedback) {
-            this.planFeedbackText = message.feedback;
+        await this.client.approveToolCall(msg.requestId, msg.outcome);
+      },
+      questionAnswer: async (msg) => this.client.answerQuestions(msg.requestId, msg.answers),
+      planApproval: async (msg) => {
+        if (msg.requestId === -1) {
+          this.planApprovalCoordinator.registerSyntheticApproval(msg.option, msg.feedback);
+          if (msg.option === 'smart' || msg.option === 'default') {
+            this.store.setMode(msg.option);
           }
-          // Unblock handleSendMessage's post-run block
-          this.syntheticPlanResolve?.();
-          this.syntheticPlanResolve = null;
-        } else {
-          if (isApproved) {
-            this.planApprovedMode = message.option as 'smart' | 'default';
-          } else if (message.option === 'feedback' && message.feedback) {
-            this.planFeedbackText = message.feedback;
-          }
-          await this.client.approvePlan(message.requestId, isApproved);
+          return;
         }
-        break;
-      }
 
-      case 'cancelCurrent':
+        const approved = this.planApprovalCoordinator.registerServerApproval(msg.option, msg.feedback);
+        await this.client.approvePlan(msg.requestId, approved);
+      },
+      cancelCurrent: async () => {
         await this.client.cancel();
         this.store.setStreaming(false);
         this.store.endAssistantMessage();
-        // Unblock any pending synthetic plan approval
-        this.syntheticPlanResolve?.();
-        this.syntheticPlanResolve = null;
-        break;
-
-      case 'startAuth':
-        await this.handleStartAuth();
-        break;
-    }
-  }
-
-  private static invalidateSharedCliCheck(): void {
-    this.sharedCliCheckCache = null;
-    this.sharedCliCheckInFlight = null;
-  }
-
-  private static cacheCliCheckResult(result: CliAvailabilityResult): void {
-    this.sharedCliCheckCache = { result, checkedAt: Date.now() };
-  }
-
-  private static isSharedCliCheckFresh(): boolean {
-    if (!this.sharedCliCheckCache) {
-      return false;
-    }
-
-    const ttl = this.sharedCliCheckCache.result.version !== null
-      ? this.CLI_CHECK_SUCCESS_TTL_MS
-      : this.CLI_CHECK_FAILURE_TTL_MS;
-    return Date.now() - this.sharedCliCheckCache.checkedAt < ttl;
-  }
-
-  private async getSharedCliAvailability(forceRefresh = false): Promise<CliAvailabilityResult> {
-    if (forceRefresh) {
-      this.debug('CLI availability check: force refresh requested');
-      WebviewHandler.invalidateSharedCliCheck();
-    }
-
-    if (WebviewHandler.isSharedCliCheckFresh() && WebviewHandler.sharedCliCheckCache) {
-      this.debug('CLI availability check: using shared cache');
-      return WebviewHandler.sharedCliCheckCache.result;
-    }
-
-    if (WebviewHandler.sharedCliCheckInFlight) {
-      this.debug('CLI availability check: awaiting in-flight check');
-      return WebviewHandler.sharedCliCheckInFlight;
-    }
-
-    this.debug('CLI availability check: running client.checkAvailability()');
-    WebviewHandler.sharedCliCheckInFlight = this.client.checkAvailability()
-      .then((result) => {
-        this.debug(`CLI availability check complete: available=${result.version !== null}, version=${result.version ?? 'n/a'}`);
-        WebviewHandler.cacheCliCheckResult(result);
-        return result;
-      })
-      .finally(() => {
-        WebviewHandler.sharedCliCheckInFlight = null;
-      });
-
-    return WebviewHandler.sharedCliCheckInFlight;
+        this.planApprovalCoordinator.cancelWait();
+      },
+      startAuth: async () => this.handleStartAuth(),
+    }, (unknownType) => {
+      this.debug(`Unhandled webview message type: ${unknownType}`);
+    });
   }
 
   private async checkCliAvailability(forceRefresh = false): Promise<void> {
-    const result = await this.getSharedCliAvailability(forceRefresh);
-    this.debug(`Setting CLI status: available=${result.version !== null}, diagnostics=${result.diagnostics}`);
-    this.store.setCliStatus(result.version !== null, result.version, result.diagnostics);
+    await this.cliStatusService.check(forceRefresh);
   }
 
   private async handleStartAuth(): Promise<void> {
@@ -382,8 +287,9 @@ export class WebviewHandler {
   private async handleOpenFile(filePath: string): Promise<void> {
     try {
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(filePath));
-    } catch {
-      // no-op: opening preview is best effort
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.debug(`Failed to open file ${filePath}: ${msg}`);
     }
   }
 
@@ -413,159 +319,36 @@ export class WebviewHandler {
   }
 
   private async handleSendMessage(content: string, attachedFiles: AttachedFile[], silent = false, ideContext?: IDEContext): Promise<void> {
-    this.debug(`handleSendMessage start: silent=${silent}, contentLength=${content.length}, attachedFiles=${attachedFiles.length}, hasIdeContext=${Boolean(ideContext)}`);
-    // Immediately reflect "running" in UI so Enter has instant feedback.
-    // Expensive checks (CLI probe/connect) happen after this optimistic state update.
-    this.store.batchUpdate(() => {
-      if (!silent) {
-        this.store.addUserMessage(content, attachedFiles);
-      }
-      this.store.startAssistantMessage();
-      this.store.setStreaming(true);
+    await this.sendMessagePipeline.execute({
+      content,
+      attachedFiles,
+      silent,
+      ideContext,
     });
+  }
 
-    // Lazy check: verify CLI availability on first send (or after previous failure)
+  private async checkCliForSend(): Promise<{ available: boolean; error: string }> {
     if (!this.cliChecked) {
       this.debug('CLI has not been checked yet in this handler instance; checking now');
       await this.checkCliAvailability();
       this.cliChecked = true;
-      if (!this.store.getState().cliAvailable) {
-        const error = 'IFlow CLI/ACP is not available. Please ensure iFlow CLI is installed and accessible in your PATH.';
-        this.store.batchUpdate(() => {
-          this.store.appendToAssistantMessage({ chunkType: 'error', message: error });
-          this.store.endAssistantMessage();
-          this.store.setStreaming(false);
-        });
-        this.postMessage({ type: 'streamError', error });
-        this.cliChecked = false; // retry on next send
-        this.debug('Aborting send because CLI is unavailable');
-        return;
-      }
     }
 
-    // Refresh OAuth token if near expiry (non-blocking: if not logged in, skip)
-    await this.authService.ensureValidToken();
-
-    const conversation = this.store.getCurrentConversation();
-    if (!conversation) {
-      this.debug('No active conversation found; dropping send request');
-      return;
+    if (this.store.getState().cliAvailable) {
+      return { available: true, error: '' };
     }
 
-    // Resolve workspace folder for this conversation
-    const cwd = this.resolveWorkspaceFolder(conversation);
-    if (cwd && !conversation.workspaceFolderUri) {
-      this.store.setConversationWorkspaceFolder(cwd);
-    }
-    const fileAllowedDirs = this.getAllWorkspaceFolderPaths();
+    this.cliChecked = false; // Retry check on next send.
+    return {
+      available: false,
+      error: 'IFlow CLI/ACP is not available. Please ensure iFlow CLI is installed and accessible in your PATH.',
+    };
+  }
 
-    const workspaceFiles = await this.getWorkspaceFileList(cwd);
-    this.debug(`Prepared run context: mode=${conversation.mode}, model=${conversation.model}, cwd=${cwd ?? 'n/a'}, workspaceFiles=${workspaceFiles.length}, allowedDirs=${fileAllowedDirs.length}`);
-
-    // Track whether the AI called exit_plan_mode during this run
-    let planApprovalEmitted = false;
-    let runSucceeded = false;
-    this.planApprovedMode = null;
-    this.planFeedbackText = null;
-
-    await this.client.run(
-      {
-        prompt: content,
-        attachedFiles,
-        mode: conversation.mode,
-        think: conversation.think,
-        model: conversation.model,
-        workspaceFiles,
-        sessionId: conversation.sessionId,
-        ideContext,
-        cwd,
-        fileAllowedDirs
-      },
-      (chunk) => {
-        if (chunk.chunkType === 'plan_approval') {
-          planApprovalEmitted = true;
-        }
-        this.store.appendToAssistantMessage(chunk);
-        this.postMessage({ type: 'streamChunk', chunk });
-      },
-      () => {
-        runSucceeded = true;
-        this.debug('Run completed successfully');
-        // Batch: end assistant + stop streaming → single stateUpdated
-        this.store.batchUpdate(() => {
-          this.store.endAssistantMessage();
-          this.store.setStreaming(false);
-        });
-        this.postMessage({ type: 'streamEnd' });
-
-        // In plan mode, if the AI ended its turn without calling exit_plan_mode,
-        // show a synthetic plan approval UI so the user can approve/reject.
-        if (conversation.mode === 'plan' && !planApprovalEmitted) {
-          this.postMessage({
-            type: 'streamChunk',
-            chunk: {
-              chunkType: 'plan_approval',
-              requestId: -1,
-              plan: '',
-            }
-          });
-        }
-      },
-      (error) => {
-        this.debug(`Run failed: ${error}`);
-        // Mark CLI as unavailable on connection errors so next send retries check
-        if (error.includes('connect') || error.includes('ECONNREFUSED') || error.includes('not found') || error.includes('not available')) {
-          WebviewHandler.cacheCliCheckResult({ version: null, diagnostics: error });
-          this.store.setCliStatus(false, null, error);
-          this.cliChecked = false;
-        }
-        // Batch: append error + end assistant + stop streaming → single stateUpdated
-        this.store.batchUpdate(() => {
-          this.store.appendToAssistantMessage({ chunkType: 'error', message: error });
-          this.store.endAssistantMessage();
-          this.store.setStreaming(false);
-        });
-        this.postMessage({ type: 'streamError', error });
-      }
-    ).then((returnedSessionId) => {
-      if (returnedSessionId) {
-        this.debug(`Persisting ACP sessionId on conversation: ${returnedSessionId}`);
-        this.store.setSessionId(returnedSessionId);
-      }
-    });
-
-    // After a plan run completes, handle the user's plan approval choice.
-    if (conversation.mode === 'plan' && runSucceeded) {
-      // If the AI didn't call exit_plan_mode, the synthetic approval UI was
-      // posted in onEnd.  Wait for the user to respond before checking
-      // planApprovedMode — this fixes the race where planApprovedMode was
-      // always null because run() resolved before user interaction.
-      if (!planApprovalEmitted) {
-        this.debug('Plan mode run ended without plan approval chunk; waiting for synthetic approval');
-        await new Promise<void>((resolve) => {
-          this.syntheticPlanResolve = resolve;
-        });
-      }
-
-      if (this.planApprovedMode) {
-        this.debug(`Plan approved by user; switching to execution mode=${this.planApprovedMode}`);
-        // User chose "Yes, smart mode" or "Yes, manual approval" → execute
-        const targetMode = this.planApprovedMode;
-        this.planApprovedMode = null;
-        this.store.setMode(targetMode);
-        await this.handleSendMessage(
-          '<system-reminder>\nPlan mode has been deactivated. The user approved the plan. You are now in execution mode. You may now freely use all tools including write_file, edit_file, run_shell_command, and other modification tools. Please proceed with the implementation.\n</system-reminder>',
-          [],
-          true
-        );
-      } else if (this.planFeedbackText) {
-        this.debug('Plan feedback provided by user; sending feedback in plan mode');
-        // User chose "Tell iFlow what to do instead" → send feedback in plan mode
-        const feedback = this.planFeedbackText;
-        this.planFeedbackText = null;
-        await this.handleSendMessage(feedback, []);
-      }
-    }
+  private markCliUnavailable(diagnostics: string): void {
+    CliStatusService.cacheCliCheckResult({ version: null, diagnostics });
+    this.store.setCliStatus(false, null, diagnostics);
+    this.cliChecked = false;
   }
 
   private syncWorkspaceFolders(): void {
@@ -609,30 +392,7 @@ export class WebviewHandler {
   }
 
   private pushIDEContext(): void {
-    const editor = vscode.window.activeTextEditor;
-    const context: IDEContext = { activeFile: null, selection: null };
-
-    if (editor && editor.document.uri.scheme === 'file') {
-      const filePath = editor.document.uri.fsPath;
-      const fileName = path.basename(filePath);
-      context.activeFile = { path: filePath, name: fileName };
-
-      const selection = editor.selection;
-      if (!selection.isEmpty) {
-        const text = editor.document.getText(selection);
-        const cappedText = text.length > WebviewHandler.MAX_SELECTION_CHARS
-          ? text.substring(0, WebviewHandler.MAX_SELECTION_CHARS)
-          : text;
-        context.selection = {
-          filePath,
-          fileName,
-          text: cappedText,
-          lineStart: selection.start.line + 1,
-          lineEnd: selection.end.line + 1,
-        };
-      }
-    }
-
+    const context: IDEContext = IDEContextService.build(WebviewHandler.MAX_SELECTION_CHARS);
     this.debug(`Pushing IDE context: activeFile=${context.activeFile?.path ?? 'none'}, hasSelection=${Boolean(context.selection)}`);
     this.postMessage({ type: 'ideContextChanged', context });
   }
@@ -642,41 +402,7 @@ export class WebviewHandler {
   }
 
   getHtmlForWebview(webview: vscode.Webview): string {
-    const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview.js')
-    );
-    const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, 'media', 'styles.css')
-    );
-    const faviconUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, 'media', 'iflow_favicon.svg')
-    );
-
-    const nonce = this.getNonce();
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
-    <link href="${styleUri}" rel="stylesheet">
-    <title>IFlow</title>
-</head>
-<body>
-    <div id="app" data-favicon-uri="${faviconUri}"></div>
-    <script nonce="${nonce}" src="${scriptUri}"></script>
-</body>
-</html>`;
-  }
-
-  private getNonce(): string {
-    let text = '';
-    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 32; i++) {
-      text += possible.charAt(Math.floor(Math.random() * possible.length));
-    }
-    return text;
+    return buildWebviewHtml(this.extensionUri, webview);
   }
 
   private disposeListeners(): void {

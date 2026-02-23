@@ -37,9 +37,10 @@ export type StreamChunk =
   | { chunkType: 'code_start'; language: string; filename?: string }
   | { chunkType: 'code_content'; content: string }
   | { chunkType: 'code_end' }
-  | { chunkType: 'tool_start'; name: string; input: Record<string, unknown>; label?: string }
-  | { chunkType: 'tool_output'; content: string }
-  | { chunkType: 'tool_end'; status: 'completed' | 'error' }
+  | { chunkType: 'usage'; promptTokens?: number; completionTokens?: number; totalTokens?: number }
+  | { chunkType: 'tool_start'; name: string; input: Record<string, unknown>; label?: string; toolCallId?: string }
+  | { chunkType: 'tool_output'; content: string; toolCallId?: string }
+  | { chunkType: 'tool_end'; status: 'completed' | 'error'; toolCallId?: string }
   | { chunkType: 'tool_confirmation'; requestId: number; toolName: string; description: string; confirmationType: string }
   | { chunkType: 'user_question'; requestId: number; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }
   | { chunkType: 'plan_approval'; requestId: number; plan: string }
@@ -55,7 +56,7 @@ export type StreamChunk =
 export type OutputBlock =
   | { type: 'text'; content: string }
   | { type: 'code'; language: string; filename?: string; content: string }
-  | { type: 'tool'; name: string; input: Record<string, unknown>; output: string; status: 'running' | 'completed' | 'error'; label?: string }
+  | { type: 'tool'; name: string; input: Record<string, unknown>; output: string; status: 'running' | 'completed' | 'error'; label?: string; toolCallId?: string }
   | { type: 'thinking'; content: string; collapsed: boolean }
   | { type: 'file_ref'; path: string; lineStart?: number; lineEnd?: number }
   | { type: 'plan'; entries: Array<{ content: string; status: string; priority: string }> }

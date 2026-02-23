@@ -22,6 +22,27 @@ suite('ChunkMapper', () => {
     }
   });
 
+  test('agent_message_chunk maps usageMetadata to usage chunk', () => {
+    const chunks = mapper.mapUpdateToChunks({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'hello world' },
+      usageMetadata: {
+        promptTokenCount: 1234,
+        candidatesTokenCount: 56,
+        totalTokenCount: 1290,
+      },
+    });
+
+    assert.strictEqual(chunks.length, 2);
+    assert.strictEqual(chunks[0].chunkType, 'text');
+    assert.strictEqual(chunks[1].chunkType, 'usage');
+    if (chunks[1].chunkType === 'usage') {
+      assert.strictEqual(chunks[1].promptTokens, 1234);
+      assert.strictEqual(chunks[1].completionTokens, 56);
+      assert.strictEqual(chunks[1].totalTokens, 1290);
+    }
+  });
+
   test('agent_thought_chunk emits thinking_start once and thinking_content', () => {
     const first = mapper.mapUpdateToChunks({
       sessionUpdate: 'agent_thought_chunk',
@@ -73,6 +94,27 @@ suite('ChunkMapper', () => {
     assert.ok(chunks.some((chunk) => chunk.chunkType === 'tool_end' && chunk.status === 'completed'));
   });
 
+  test('tool_call_update maps openai-style usage object', () => {
+    const chunks = mapper.mapUpdateToChunks({
+      sessionUpdate: 'tool_call_update',
+      status: 'completed',
+      toolName: 'read_file',
+      usage: {
+        prompt_tokens: 3000,
+        completion_tokens: 200,
+        total_tokens: 3200,
+      },
+    });
+
+    const usage = chunks.find((chunk) => chunk.chunkType === 'usage');
+    assert.ok(usage);
+    if (usage?.chunkType === 'usage') {
+      assert.strictEqual(usage.promptTokens, 3000);
+      assert.strictEqual(usage.completionTokens, 200);
+      assert.strictEqual(usage.totalTokens, 3200);
+    }
+  });
+
   test('tool_call pending emits tool_start', () => {
     const chunks = mapper.mapUpdateToChunks({
       sessionUpdate: 'tool_call',
@@ -86,6 +128,42 @@ suite('ChunkMapper', () => {
     if (chunks[0].chunkType === 'tool_start') {
       assert.strictEqual(chunks[0].name, 'write_file');
       assert.strictEqual(chunks[0].input.file_path, '/tmp/a.ts');
+    }
+  });
+
+  test('tool_call_update includes toolCallId and reads path from content item args', () => {
+    const chunks = mapper.mapUpdateToChunks({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call-1',
+      toolName: 'read_file',
+      status: 'completed',
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Read all 10 lines from a.ts' },
+          args: { absolute_path: '/tmp/a.ts' },
+        },
+      ],
+    });
+
+    const start = chunks.find((chunk) => chunk.chunkType === 'tool_start');
+    const output = chunks.find((chunk) => chunk.chunkType === 'tool_output');
+    const end = chunks.find((chunk) => chunk.chunkType === 'tool_end');
+
+    assert.ok(start);
+    assert.ok(output);
+    assert.ok(end);
+
+    if (start?.chunkType === 'tool_start') {
+      assert.strictEqual(start.toolCallId, 'call-1');
+      assert.strictEqual(start.input.file_path, '/tmp/a.ts');
+    }
+    if (output?.chunkType === 'tool_output') {
+      assert.strictEqual(output.toolCallId, 'call-1');
+    }
+    if (end?.chunkType === 'tool_end') {
+      assert.strictEqual(end.toolCallId, 'call-1');
+      assert.strictEqual(end.status, 'completed');
     }
   });
 

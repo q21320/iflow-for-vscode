@@ -81,6 +81,11 @@ export class ProcessManager {
     }
 
     const iflowScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
+    if (!iflowScript) {
+      this.logInfo('Auto-detection: failed to resolve iFlow script from CLI wrapper');
+      this._cachedAutoDetect = null;
+      return null;
+    }
     this.logInfo(`Auto-detection successful: node=${nodePath}, script=${iflowScript}`);
 
     this._cachedAutoDetect = { nodePath, iflowScript };
@@ -104,6 +109,9 @@ export class ProcessManager {
         throw new Error('iFlow CLI not found. Please install iFlow CLI first.');
       }
       const iflowScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
+      if (!iflowScript) {
+        throw new Error('Failed to resolve iFlow CLI script path from wrapper.');
+      }
       return { nodePath: config.nodePath, iflowScript, port: config.port };
     }
 
@@ -140,7 +148,11 @@ export class ProcessManager {
       if (!iflowPath) {
         throw new Error('iFlow CLI not found in PATH. Please install iFlow CLI first.');
       }
-      iflowScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
+      const resolvedScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
+      if (!resolvedScript) {
+        throw new Error('Failed to resolve iFlow CLI script path from wrapper.');
+      }
+      iflowScript = resolvedScript;
     }
 
     this.log(`Starting iFlow with Node: ${nodePath}, script: ${iflowScript}, port: ${port}`);

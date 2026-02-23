@@ -78,34 +78,38 @@ function findIFlowPathUnix(): Promise<string | null> {
  * Uses fs.realpathSync (cross-platform) instead of `readlink -f`.
  * On Windows, parses .cmd wrapper to extract the JS path.
  */
-export function resolveIFlowScriptCrossPlatform(iflowPath: string, log: Logger): string {
-  if (process.platform === 'win32') {
-    const lower = iflowPath.toLowerCase();
-    const dir = path.dirname(iflowPath);
+export function resolveIFlowScriptCrossPlatform(iflowPath: string, log: Logger): string | null {
+  const lower = iflowPath.toLowerCase();
+  const dir = path.dirname(iflowPath);
+  const isWrapperInput = lower.endsWith('.ps1') || lower.endsWith('.cmd');
 
-    // Try .ps1 PowerShell wrapper (preferred on modern Windows)
-    const ps1Path = lower.endsWith('.ps1') ? iflowPath : null;
-    const ps1Sibling = !ps1Path ? path.join(dir, 'iflow.ps1') : null;
-    const ps1File = ps1Path || (ps1Sibling && fs.existsSync(ps1Sibling) ? ps1Sibling : null);
-    if (ps1File) {
-      const result = parsePs1Wrapper(ps1File, log);
-      if (result) {
-        log(`[script resolve] extracted JS from .ps1: ${result}`);
-        return result;
-      }
+  // Try .ps1 PowerShell wrapper first.
+  const ps1Path = lower.endsWith('.ps1') ? iflowPath : null;
+  const ps1Sibling = !ps1Path ? path.join(dir, 'iflow.ps1') : null;
+  const ps1File = ps1Path || (ps1Sibling && fs.existsSync(ps1Sibling) ? ps1Sibling : null);
+  if (ps1File) {
+    const result = parsePs1Wrapper(ps1File, log);
+    if (result) {
+      log(`[script resolve] extracted JS from .ps1: ${result}`);
+      return result;
     }
+  }
 
-    // Try .cmd batch wrapper
-    const cmdPath = lower.endsWith('.cmd') ? iflowPath : null;
-    const cmdSibling = !cmdPath ? path.join(dir, 'iflow.cmd') : null;
-    const cmdFile = cmdPath || (cmdSibling && fs.existsSync(cmdSibling) ? cmdSibling : null);
-    if (cmdFile) {
-      const result = parseCmdWrapper(cmdFile, log);
-      if (result) {
-        log(`[script resolve] extracted JS from .cmd: ${result}`);
-        return result;
-      }
+  // Try .cmd batch wrapper.
+  const cmdPath = lower.endsWith('.cmd') ? iflowPath : null;
+  const cmdSibling = !cmdPath ? path.join(dir, 'iflow.cmd') : null;
+  const cmdFile = cmdPath || (cmdSibling && fs.existsSync(cmdSibling) ? cmdSibling : null);
+  if (cmdFile) {
+    const result = parseCmdWrapper(cmdFile, log);
+    if (result) {
+      log(`[script resolve] extracted JS from .cmd: ${result}`);
+      return result;
     }
+  }
+
+  if (isWrapperInput) {
+    log(`[script resolve] wrapper parsing failed: ${iflowPath}`);
+    return null;
   }
 
   // Unix or fallback: resolve symlinks via Node.js native API
@@ -126,11 +130,17 @@ function parseCmdWrapper(cmdPath: string, log: Logger): string | null {
     const match = content.match(/"([^"]*\.js)"/);
     if (match) {
       const dir = path.dirname(cmdPath);
-      const jsPath = match[1]
+      const jsPathRaw = match[1]
         .replace(/%~dp0\\/gi, dir + path.sep)
         .replace(/%~dp0/gi, dir + path.sep)
         .replace(/%dp0%\\/gi, dir + path.sep)
         .replace(/%dp0%/gi, dir + path.sep);
+
+      const jsPath = path.normalize(
+        jsPathRaw
+          .replace(/\\/g, path.sep)
+          .replace(/\//g, path.sep),
+      );
       if (fs.existsSync(jsPath)) {
         return jsPath;
       }

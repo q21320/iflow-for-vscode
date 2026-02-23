@@ -22,7 +22,7 @@ import {
   renderIDEContextChips,
   getModeLabel,
 } from './appRenderer';
-import type { PendingConfirmation, PendingQuestion, PendingPlanApproval } from './appRenderer';
+import type { PendingConfirmation, PendingQuestion, PendingPlanApproval } from './panels/panelTypes';
 import {
   attachTopBarListeners,
   attachModeListeners,

@@ -24,6 +24,7 @@ interface ToolContentEntry {
   newText?: string;
   oldText?: string | null;
   fileDiff?: string;
+  args?: Record<string, unknown>;
 }
 
 interface ToolLocation {
@@ -39,6 +40,7 @@ interface SessionUpdatePayload {
   sessionUpdate?: string;
   content?: unknown;
   toolName?: string;
+  toolCallId?: string;
   title?: string | null;
   status?: string | null;
   args?: Record<string, unknown>;
@@ -46,9 +48,13 @@ interface SessionUpdatePayload {
   locations?: ToolLocation[] | null;
   output?: unknown;
   type?: string;
+  id?: string;
   chunk?: { thought?: string; text?: string };
   label?: string | null;
   message?: string;
+  usageMetadata?: unknown;
+  usage?: unknown;
+  tokenUsage?: unknown;
 }
 
 const LEGACY_MESSAGE_TYPE = {
@@ -168,16 +174,21 @@ export class ChunkMapper {
       }
     }
 
-    // Map absolute_path to file_path if not already set.
-    if (input.absolute_path && !input.file_path) {
-      input.file_path = input.absolute_path;
-    }
+    this.normalizePathFields(input);
 
     // New ACP shape: content is an array of tool result items.
     if (Array.isArray(message.content)) {
       for (const item of message.content as ToolContentEntry[]) {
         if (!isObject(item)) {
           continue;
+        }
+
+        if (isObject(item.args)) {
+          for (const [key, value] of Object.entries(item.args)) {
+            if (input[key] === undefined) {
+              input[key] = value;
+            }
+          }
         }
 
         if (typeof item.path === 'string' && !input.file_path) {
@@ -228,7 +239,15 @@ export class ChunkMapper {
       }
     }
 
+    this.normalizePathFields(input);
+
     return input;
+  }
+
+  private normalizePathFields(input: Record<string, unknown>): void {
+    if (input.absolute_path && !input.file_path) {
+      input.file_path = input.absolute_path;
+    }
   }
 
   private mapTextThroughParser(text: string): StreamChunk[] {
@@ -236,6 +255,76 @@ export class ChunkMapper {
       return this.parser.parse(text);
     }
     return [{ chunkType: 'text', content: text }];
+  }
+
+  private toTokenCount(value: unknown): number | undefined {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return undefined;
+    }
+    return Math.max(0, Math.round(value));
+  }
+
+  private pickUsageField(
+    source: Record<string, unknown>,
+    keys: string[],
+  ): number | undefined {
+    for (const key of keys) {
+      const parsed = this.toTokenCount(source[key]);
+      if (parsed !== undefined) {
+        return parsed;
+      }
+    }
+    return undefined;
+  }
+
+  private extractUsageChunk(update: SessionUpdatePayload): StreamChunk | null {
+    const sources: Array<Record<string, unknown>> = [];
+    for (const candidate of [
+      update.usageMetadata,
+      update.usage,
+      update.tokenUsage,
+      update.output,
+      update.content,
+    ]) {
+      if (isObject(candidate)) {
+        sources.push(candidate);
+      }
+    }
+
+    let promptTokens: number | undefined;
+    let completionTokens: number | undefined;
+    let totalTokens: number | undefined;
+
+    for (const source of sources) {
+      if (promptTokens === undefined) {
+        promptTokens = this.pickUsageField(source, ['promptTokenCount', 'prompt_tokens', 'input_tokens']);
+      }
+      if (completionTokens === undefined) {
+        completionTokens = this.pickUsageField(source, ['candidatesTokenCount', 'completion_tokens', 'output_tokens']);
+      }
+      if (totalTokens === undefined) {
+        totalTokens = this.pickUsageField(source, ['totalTokenCount', 'total_tokens']);
+      }
+    }
+
+    if (promptTokens === undefined && completionTokens === undefined && totalTokens === undefined) {
+      return null;
+    }
+
+    return {
+      chunkType: 'usage',
+      promptTokens,
+      completionTokens,
+      totalTokens,
+    };
+  }
+
+  private withUsage(chunks: StreamChunk[], update: SessionUpdatePayload): StreamChunk[] {
+    const usageChunk = this.extractUsageChunk(update);
+    if (!usageChunk) {
+      return chunks;
+    }
+    return [...chunks, usageChunk];
   }
 
   private extractToolOutput(content: unknown): string | null {
@@ -297,6 +386,9 @@ export class ChunkMapper {
       : update.sessionUpdate === 'tool_call'
         ? 'pending'
         : 'in_progress';
+    const toolCallId = typeof update.toolCallId === 'string'
+      ? update.toolCallId
+      : undefined;
 
     const toolName = update.toolName || (typeof update.title === 'string' ? update.title : 'unknown');
     const enrichedInput = this.enrichToolInput({
@@ -315,36 +407,39 @@ export class ChunkMapper {
         name: toolName,
         input: enrichedInput,
         label: cleanLabel,
+        toolCallId,
       });
 
       if (output) {
-        chunks.push({ chunkType: 'tool_output', content: output });
+        chunks.push({ chunkType: 'tool_output', content: output, toolCallId });
       }
 
-      return chunks;
+      return this.withUsage(chunks, update);
     }
 
     if (status === 'completed' || status === 'failed') {
-      if (Object.keys(enrichedInput).length > 0) {
+      if (toolCallId || Object.keys(enrichedInput).length > 0) {
         chunks.push({
           chunkType: 'tool_start',
           name: toolName,
           input: enrichedInput,
           label: cleanLabel,
+          toolCallId,
         });
       }
 
       if (output) {
-        chunks.push({ chunkType: 'tool_output', content: output });
+        chunks.push({ chunkType: 'tool_output', content: output, toolCallId });
       }
 
       chunks.push({
         chunkType: 'tool_end',
         status: status === 'completed' ? 'completed' : 'error',
+        toolCallId,
       });
     }
 
-    return chunks;
+    return this.withUsage(chunks, update);
   }
 
   /**
@@ -370,7 +465,7 @@ export class ChunkMapper {
           }
           chunks.push({ chunkType: 'thinking_content', content: content.text });
         }
-        return chunks;
+        return this.withUsage(chunks, update);
       }
 
       case 'agent_message_chunk': {
@@ -382,7 +477,7 @@ export class ChunkMapper {
           }
           chunks.push(...this.mapTextThroughParser(content.text));
         }
-        return chunks;
+        return this.withUsage(chunks, update);
       }
 
       case 'tool_call':
@@ -400,11 +495,11 @@ export class ChunkMapper {
             })),
           });
         }
-        return chunks;
+        return this.withUsage(chunks, update);
 
       case 'available_commands_update':
       case 'user_message_chunk':
-        return chunks;
+        return this.withUsage(chunks, update);
 
       default:
         break;
@@ -438,11 +533,17 @@ export class ChunkMapper {
         return this.mapToolUpdate({
           sessionUpdate: 'tool_call_update',
           toolName: update.toolName as string | undefined,
+          toolCallId: typeof update.toolCallId === 'string'
+            ? update.toolCallId
+            : (typeof update.id === 'string' ? update.id : undefined),
           title: update.label as string | null | undefined,
           status: update.status as string | null | undefined,
           args: update.args as Record<string, unknown> | undefined,
           content: update.content,
           locations: Array.isArray(update.locations) ? update.locations as ToolLocation[] : null,
+          usageMetadata: update.usageMetadata,
+          usage: update.usage,
+          tokenUsage: update.tokenUsage,
         });
 
       case LEGACY_MESSAGE_TYPE.PLAN:
@@ -476,6 +577,6 @@ export class ChunkMapper {
         this.log(`Unknown session update payload: ${JSON.stringify(payload).substring(0, 200)}`);
     }
 
-    return chunks;
+    return this.withUsage(chunks, update);
   }
 }
