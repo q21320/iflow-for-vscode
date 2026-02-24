@@ -269,12 +269,36 @@ export class SessionCoordinator {
       throw new Error('No active protocol/session for reusable connection');
     }
 
-    if (options.sessionId && options.sessionId !== this.snapshot.sessionId) {
+    const cwd = options.cwd ?? process.cwd();
+    const sessionSettings = this.deps.runtimeConfigApplier.buildSessionSettings(options);
+
+    if (!options.sessionId) {
+      // New conversation (no sessionId) — create a fresh server-side session
+      // to avoid inheriting plan/todo state from the previous session.
+      const sessionResult = await this.protocol.sendRequest('session/new', {
+        cwd,
+        mcpServers: [],
+        settings: sessionSettings,
+      }) as { sessionId?: string };
+
+      if (!sessionResult.sessionId) {
+        throw new Error('session/new did not return sessionId');
+      }
+
+      this.updateSnapshot(
+        {
+          ...this.snapshot,
+          sessionId: sessionResult.sessionId,
+        },
+        'ready',
+      );
+    } else if (options.sessionId !== this.snapshot.sessionId) {
+      // Resuming a specific existing session — load it.
       await this.protocol.sendRequest('session/load', {
         sessionId: options.sessionId,
-        cwd: options.cwd ?? process.cwd(),
+        cwd,
         mcpServers: [],
-        settings: this.deps.runtimeConfigApplier.buildSessionSettings(options),
+        settings: sessionSettings,
       });
 
       this.updateSnapshot(

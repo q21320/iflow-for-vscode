@@ -131,4 +131,58 @@ suite('SendMessagePipeline', () => {
     assert.ok(client.runCalls[1].prompt.includes('system-reminder'));
     assert.ok(messages.some((m) => m.type === 'streamChunk' && m.chunk.chunkType === 'plan_approval'));
   });
+
+  test('normalizes empty runtime errors before emitting streamError', async () => {
+    const store = new ConversationStore(
+      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
+      () => {},
+    );
+    store.newConversation();
+
+    const messages: ExtensionMessage[] = [];
+    const failingClient = {
+      run: async (
+        _options: RunOptions,
+        _onChunk: (chunk: StreamChunk) => void,
+        _onEnd: () => void,
+        onError: (error: string) => void,
+      ) => {
+        onError('   ');
+        return undefined;
+      },
+    };
+
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: failingClient as unknown as import('../acpClient').AcpClient,
+      authService: { ensureValidToken: async () => true } as unknown as import('../authService').AuthService,
+      postMessage: (message) => messages.push(message),
+      checkCliForSend: async () => ({ available: true, error: '' }),
+      markCliUnavailable: () => {},
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async () => [],
+      planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+    });
+
+    await pipeline.execute({
+      content: 'trigger error',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    const streamError = messages.find((m) => m.type === 'streamError') as Extract<ExtensionMessage, { type: 'streamError' }> | undefined;
+    assert.ok(streamError);
+    assert.strictEqual(streamError?.error, 'Unknown error');
+
+    const conversation = store.getCurrentConversation();
+    assert.ok(conversation);
+    const lastMessage = conversation?.messages[conversation.messages.length - 1];
+    assert.ok(lastMessage && lastMessage.role === 'assistant');
+    const errorBlock = lastMessage?.blocks.find((b) => b.type === 'error') as Extract<NonNullable<typeof lastMessage>['blocks'][number], { type: 'error' }> | undefined;
+    assert.ok(errorBlock);
+    assert.strictEqual(errorBlock?.message, 'Unknown error');
+  });
 });

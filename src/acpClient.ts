@@ -8,6 +8,7 @@ import { AcpTransport } from './acpTransport';
 import { AcpProtocol } from './acpProtocol';
 import { ProcessManager } from './processManager';
 import { InteractionBridge } from './acp/interactionBridge';
+import { normalizeErrorMessage } from './errorUtils';
 import { PathPolicy } from './acp/pathPolicy';
 import { RuntimeConfigApplier } from './acp/runtimeConfigApplier';
 import { SessionCoordinator } from './acp/sessionCoordinator';
@@ -193,17 +194,61 @@ export class AcpClient {
       }
       const debugLogging = getConfig<boolean>('debugLogging', false);
 
-      protocol.onNotification('session/update', (params: unknown) => {
-        const envelope = isObject(params) ? params as AcpNotificationEnvelope : {};
-        const update = this.mergeEnvelopeUsage(params, envelope);
-        if (debugLogging) {
-          this.logSessionUpdateDebug(params, envelope, update);
-        }
-        const chunks = this.chunkMapper.mapUpdateToChunks(update);
-        for (const chunk of chunks) {
-          onChunk(chunk);
-        }
-      });
+      // ── Inactivity tracking for stuck sub-agents ─────────────────────
+      const inactivityTimeoutMs = getConfig<number>('subagentInactivityTimeoutMs', 300000);
+      const inactivityState = {
+        lastActivityTime: Date.now(),
+        lastInProgressTool: null as { name: string; title: string } | null,
+        triggered: false,
+      };
+
+      const registerNotificationHandler = (): void => {
+        protocol.onNotification('session/update', (params: unknown) => {
+          inactivityState.lastActivityTime = Date.now();
+
+          const envelope = isObject(params) ? params as AcpNotificationEnvelope : {};
+          const update = this.mergeEnvelopeUsage(params, envelope);
+
+          // Track the latest in-progress tool for timeout messages
+          if (isObject(update)
+            && update.sessionUpdate === 'tool_call_update'
+            && update.status === 'in_progress'
+            && typeof update.toolName === 'string') {
+            inactivityState.lastInProgressTool = {
+              name: update.toolName,
+              title: typeof update.title === 'string' ? update.title : '',
+            };
+          }
+
+          if (debugLogging) {
+            this.logSessionUpdateDebug(params, envelope, update);
+          }
+          const chunks = this.chunkMapper.mapUpdateToChunks(update);
+          for (const chunk of chunks) {
+            onChunk(chunk);
+          }
+        });
+      };
+
+      registerNotificationHandler();
+
+      const inactivityInterval = inactivityTimeoutMs > 0
+        ? setInterval(() => {
+            if (!this.running || inactivityState.triggered) { return; }
+            if (Date.now() - inactivityState.lastActivityTime >= inactivityTimeoutMs) {
+              inactivityState.triggered = true;
+              this.log(
+                `Inactivity detected (${Math.round(inactivityTimeoutMs / 1000)}s). ` +
+                `Last tool: ${inactivityState.lastInProgressTool?.name ?? 'none'}. Cancelling...`
+              );
+              // Cancel with a safety timeout to avoid cancel itself hanging
+              Promise.race([
+                this.cancel(),
+                new Promise<void>(resolve => setTimeout(resolve, 10000)),
+              ]).catch(() => {});
+            }
+          }, 10000)
+        : null;
 
       const builtPrompt = this.chunkMapper.buildPrompt({
         prompt: options.prompt,
@@ -213,10 +258,54 @@ export class AcpClient {
         cwd: options.cwd,
       });
 
-      const promptResult = await protocol.sendRequest('session/prompt', {
-        sessionId,
-        prompt: [{ type: 'text', text: builtPrompt }],
-      });
+      // ── Execute prompt with inactivity recovery ──────────────────────
+      let promptResult: unknown;
+      let needsRecovery = false;
+
+      try {
+        promptResult = await protocol.sendRequest('session/prompt', {
+          sessionId,
+          prompt: [{ type: 'text', text: builtPrompt }],
+        });
+        if (inactivityState.triggered) {
+          needsRecovery = true;
+        }
+      } catch (promptError) {
+        if (inactivityState.triggered) {
+          needsRecovery = true;
+        } else {
+          throw promptError;
+        }
+      } finally {
+        if (inactivityInterval) { clearInterval(inactivityInterval); }
+      }
+
+      // ── Inactivity recovery: inform main agent ─────────────────────
+      if (needsRecovery && inactivityState.lastInProgressTool) {
+        const stuckTool = inactivityState.lastInProgressTool;
+        const toolDesc = stuckTool.title || stuckTool.name;
+        const timeoutMinutes = Math.round(inactivityTimeoutMs / 60000);
+
+        onChunk({
+          chunkType: 'warning',
+          message: `Sub-agent "${toolDesc}" appears stuck (no activity for ${timeoutMinutes} min). Notifying main agent...`,
+        });
+
+        this.chunkMapper.reset();
+        registerNotificationHandler();
+
+        const recoveryPrompt =
+          `<system-reminder>The sub-agent "${toolDesc}" (tool: ${stuckTool.name}) ` +
+          `was inactive for over ${timeoutMinutes} minutes and has been automatically cancelled. ` +
+          `It may not be available or may have encountered an internal error. ` +
+          `Please try a different approach or continue without this step.</system-reminder>`;
+
+        promptResult = await protocol.sendRequest('session/prompt', {
+          sessionId,
+          prompt: [{ type: 'text', text: recoveryPrompt }],
+        });
+      }
+
       const promptUsage = this.extractUsageChunk(promptResult);
       if (promptUsage) {
         onChunk(promptUsage);
@@ -229,7 +318,7 @@ export class AcpClient {
       onEnd();
       return this.sessionCoordinator.currentSessionId ?? undefined;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = normalizeErrorMessage(err, 'Unknown ACP error');
       onError(message);
       return undefined;
     } finally {

@@ -116,6 +116,49 @@ suite('AcpProtocol', () => {
     await assert.rejects(resultPromise, /Method not found/);
   });
 
+  test('sendRequest includes JSON-RPC code and data when message is empty', async () => {
+    const resultPromise = protocol.sendRequest('bad_method');
+
+    const sent = lastSent(transport);
+    transport.deliver(JSON.stringify({
+      jsonrpc: '2.0',
+      id: sent.id,
+      error: {
+        code: -32001,
+        message: '',
+        data: { detail: 'session expired' },
+      },
+    }));
+
+    try {
+      await resultPromise;
+      assert.fail('Expected request to reject');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      assert.ok(message.includes('[JSON-RPC -32001]'));
+      assert.ok(message.includes('session expired'));
+    }
+  });
+
+  test('sendRequest falls back to a generic JSON-RPC error message', async () => {
+    const resultPromise = protocol.sendRequest('bad_method');
+
+    const sent = lastSent(transport);
+    transport.deliver(JSON.stringify({
+      jsonrpc: '2.0',
+      id: sent.id,
+      error: { code: -32603 },
+    }));
+
+    try {
+      await resultPromise;
+      assert.fail('Expected request to reject');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      assert.strictEqual(message, '[JSON-RPC -32603] Unknown JSON-RPC error');
+    }
+  });
+
   test('sendRequest cleans pending request when transport.send fails', async () => {
     transport.failNextSend = new Error('send failed');
     await assert.rejects(

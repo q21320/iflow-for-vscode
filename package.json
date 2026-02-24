@@ -3,7 +3,7 @@
   "publisher": "YauMike",
   "displayName": "IFlow for VS Code",
   "description": "Bring IFlow (iflow CLI) into VS Code: chat panel, commands, and editor-group lock.",
-  "version": "0.0.14",
+  "version": "0.1.1",
   "repository": "https://github.com/xsw632/iflow-for-vscode.git",
   "homepage": "https://github.com/xsw632/iflow-for-vscode",
   "bugs": {
@@ -135,6 +135,11 @@
           "type": "boolean",
           "default": false,
           "description": "Only show [ACP] session/update summary logs (with toolCallId) in the IFlow output channel (and debug console when debugLogging is enabled)."
+        },
+        "iflow.subagentInactivityTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "description": "Timeout in milliseconds for sub-agent inactivity detection. If no notifications arrive from the CLI for this duration during a tool call, the operation is cancelled and the main agent is informed. Set to 0 to disable. Default: 300000 (5 minutes)."
         }
       }
     }

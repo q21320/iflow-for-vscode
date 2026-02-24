@@ -188,9 +188,11 @@ export function applyChunkToMessage(message: Message, chunk: StreamChunk): Messa
       return { ...message, blocks };
     }
 
-    case 'error':
-      blocks.push({ type: 'error', message: chunk.message });
+    case 'error': {
+      const errorMessage = chunk.message.trim() || 'Unknown error';
+      blocks.push({ type: 'error', message: errorMessage });
       return { ...message, blocks };
+    }
 
     case 'warning':
       blocks.push({ type: 'warning', message: chunk.message });

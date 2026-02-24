@@ -1,5 +1,6 @@
 import { AcpClient } from '../acpClient';
 import { AuthService } from '../authService';
+import { normalizeErrorMessage } from '../errorUtils';
 import { ConversationStore } from '../store';
 import { AttachedFile, Conversation, ExtensionMessage, IDEContext } from '../protocol';
 import { PlanApprovalCoordinator } from './planApprovalCoordinator';
@@ -65,12 +66,16 @@ export class SendMessagePipeline {
 
     const cli = await this.deps.checkCliForSend();
     if (!cli.available) {
+      const cliError = normalizeErrorMessage(
+        cli.error,
+        'IFlow CLI/ACP is not available. Please ensure iFlow CLI is installed and accessible in your PATH.',
+      );
       this.deps.store.batchUpdate(() => {
-        this.deps.store.appendToAssistantMessage({ chunkType: 'error', message: cli.error });
+        this.deps.store.appendToAssistantMessage({ chunkType: 'error', message: cliError });
         this.deps.store.endAssistantMessage();
         this.deps.store.setStreaming(false);
       });
-      this.deps.postMessage({ type: 'streamError', error: cli.error });
+      this.deps.postMessage({ type: 'streamError', error: cliError });
       this.deps.debug('Send pipeline aborted because CLI is unavailable');
       return [];
     }
@@ -123,17 +128,18 @@ export class SendMessagePipeline {
         this.deps.postMessage({ type: 'streamEnd' });
       },
       (error) => {
-        this.deps.debug(`Run failed: ${error}`);
-        if (this.shouldResetCli(error)) {
-          this.deps.markCliUnavailable(error);
+        const normalizedError = normalizeErrorMessage(error);
+        this.deps.debug(`Run failed: ${normalizedError}`);
+        if (this.shouldResetCli(normalizedError)) {
+          this.deps.markCliUnavailable(normalizedError);
         }
 
         this.deps.store.batchUpdate(() => {
-          this.deps.store.appendToAssistantMessage({ chunkType: 'error', message: error });
+          this.deps.store.appendToAssistantMessage({ chunkType: 'error', message: normalizedError });
           this.deps.store.endAssistantMessage();
           this.deps.store.setStreaming(false);
         });
-        this.deps.postMessage({ type: 'streamError', error });
+        this.deps.postMessage({ type: 'streamError', error: normalizedError });
       },
     ).then((returnedSessionId) => {
       if (returnedSessionId) {

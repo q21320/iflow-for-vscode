@@ -47,6 +47,7 @@ export class AcpProtocol {
 
   /** Whether the receive loop is running. */
   private running = false;
+  private readonly errorDataPreviewLimit = 240;
 
   constructor(transport: AcpTransport, log: LogFn) {
     this.transport = transport;
@@ -184,8 +185,7 @@ export class AcpProtocol {
       this.pendingRequests.delete(id);
 
       if (message.error) {
-        const err = message.error as { code: number; message: string };
-        pending.reject(new Error(err.message));
+        pending.reject(new Error(this.formatJsonRpcError(message.error)));
       } else {
         pending.resolve(message.result);
       }
@@ -204,7 +204,7 @@ export class AcpProtocol {
       handler(id, message.params)
         .then((result) => this.sendResult(id, result))
         .catch((err: Error) =>
-          this.sendError(id, -32603, err.message),
+          this.sendError(id, -32603, err.message || 'Handler failed'),
         );
       return;
     }
@@ -220,5 +220,60 @@ export class AcpProtocol {
     }
 
     this.log(`Unroutable message: ${JSON.stringify(message).substring(0, 200)}`);
+  }
+
+  private formatJsonRpcError(errorPayload: unknown): string {
+    if (!this.isRecord(errorPayload)) {
+      return '[JSON-RPC] Unknown JSON-RPC error';
+    }
+
+    const code = typeof errorPayload.code === 'number' ? errorPayload.code : undefined;
+    const rawMessage = typeof errorPayload.message === 'string'
+      ? errorPayload.message.trim()
+      : '';
+    const dataSummary = this.summarizeErrorData(errorPayload.data);
+
+    let message = rawMessage;
+    if (!message) {
+      message = dataSummary || 'Unknown JSON-RPC error';
+    } else if (dataSummary) {
+      message = `${message} (data: ${dataSummary})`;
+    }
+
+    return code !== undefined
+      ? `[JSON-RPC ${code}] ${message}`
+      : `[JSON-RPC] ${message}`;
+  }
+
+  private summarizeErrorData(value: unknown): string | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+      return this.truncateForError(trimmed);
+    }
+
+    try {
+      return this.truncateForError(JSON.stringify(value));
+    } catch {
+      return this.truncateForError(String(value));
+    }
+  }
+
+  private truncateForError(value: string): string {
+    if (value.length <= this.errorDataPreviewLimit) {
+      return value;
+    }
+    const tail = value.length - this.errorDataPreviewLimit;
+    return `${value.slice(0, this.errorDataPreviewLimit)}... [truncated ${tail} chars]`;
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
   }
 }
