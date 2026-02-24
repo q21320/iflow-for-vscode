@@ -138,8 +138,8 @@
         },
         "iflow.subagentInactivityTimeoutMs": {
           "type": "number",
-          "default": 300000,
-          "description": "Timeout in milliseconds for sub-agent inactivity detection. If no notifications arrive from the CLI for this duration during a tool call, the operation is cancelled and the main agent is informed. Set to 0 to disable. Default: 300000 (5 minutes)."
+          "default": 90000,
+          "description": "Timeout in milliseconds for sub-agent inactivity detection. If no notifications arrive from the CLI for this duration during a tool call, the operation is cancelled and the main agent is informed. Set to 0 to disable. Default: 90000 (90 seconds)."
         }
       }
     }

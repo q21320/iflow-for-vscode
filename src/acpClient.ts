@@ -195,7 +195,7 @@ export class AcpClient {
       const debugLogging = getConfig<boolean>('debugLogging', false);
 
       // ── Inactivity tracking for stuck sub-agents ─────────────────────
-      const inactivityTimeoutMs = getConfig<number>('subagentInactivityTimeoutMs', 300000);
+      const inactivityTimeoutMs = getConfig<number>('subagentInactivityTimeoutMs', 90000);
       const inactivityState = {
         lastActivityTime: Date.now(),
         lastInProgressTool: null as { name: string; title: string } | null,
