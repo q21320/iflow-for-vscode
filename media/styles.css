@@ -1507,13 +1507,63 @@ select option {
 
 .question-panel {
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
-.question-item {
+.question-nav {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+.question-nav-item {
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.3));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.question-nav-item:hover,
+.question-nav-item:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.question-nav-item.active {
+  border-color: var(--vscode-focusBorder, #007fd4);
+  background: var(--vscode-list-activeSelectionBackground, rgba(0, 127, 212, 0.2));
+}
+
+.question-nav-item.answered {
+  border-color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.question-submit-item.disabled {
+  opacity: 0.55;
+}
+
+.question-stage,
+.question-review {
+  display: none;
+}
+
+.question-stage.is-visible,
+.question-review.is-visible {
+  display: block;
+}
+
+.question-subtitle {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 0 2px;
+  margin-top: -4px;
+}
+
+.question-options-list {
+  margin-top: 6px;
 }
 
 .question-text {
@@ -1534,6 +1584,68 @@ select option {
 .question-option.selected {
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
+}
+
+.question-option.focused {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+
+.question-other-row {
+  cursor: text;
+}
+
+.question-submit-error {
+  display: none;
+  font-size: 11px;
+  color: var(--vscode-errorForeground);
+  padding-left: 2px;
+}
+
+.question-submit-error.visible {
+  display: block;
+}
+
+.question-review-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.question-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.review-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.review-question {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.review-answer {
+  font-size: 12px;
+  color: var(--vscode-testing-iconPassed, #73c991);
+  padding-left: 14px;
+}
+
+.question-review-ready {
+  font-size: 12px;
+  color: var(--text-primary);
+  margin-top: 14px;
+}
+
+.question-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 2px;
 }
 
 /* ── Plan approval panel ────────────────────────────────────── */

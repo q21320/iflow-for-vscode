@@ -36,47 +36,36 @@ export function renderApprovalPanel(conf: PendingConfirmation): string {
 }
 
 export function renderQuestionPanel(pq: PendingQuestion): string {
-  const questionsHtml = pq.questions.map((q, qIdx) => {
-    let keyIndex = 1;
-    const optionsHtml = q.options.map((opt) => {
-      const key = keyIndex++;
-      return `
-        <button class="approval-option question-option" data-question-idx="${qIdx}" data-option-label="${escapeAttr(opt.label)}">
-          <span class="approval-key">${key}</span>
-          <span class="approval-label">${escapeHtml(opt.label)}</span>
-          ${opt.description ? `<span class="option-description">${escapeHtml(opt.description)}</span>` : ''}
-        </button>
-      `;
-    }).join('');
+  const navHtml = pq.questions.map((q, idx) => `
+    <button
+      class="question-nav-item"
+      type="button"
+      data-nav-idx="${idx}"
+      data-question-idx="${idx}"
+      title="${escapeAttr(q.header)}"
+    >
+      ${escapeHtml(q.header)}
+    </button>
+  `).join('');
 
-    const otherKey = keyIndex;
-    const otherHtml = `
-      <div class="approval-option feedback-option">
-        <span class="approval-key">${otherKey}</span>
-        <input
-          type="text"
-          class="approval-feedback-input question-other-input"
-          data-question-idx="${qIdx}"
-          placeholder="Other..."
-        />
-      </div>
-    `;
-
-    return `
-      <div class="question-item" data-question-idx="${qIdx}" data-question-header="${escapeAttr(q.header)}">
-        <div class="question-text">${escapeHtml(q.question)}</div>
-        <div class="approval-options">
-          ${optionsHtml}
-          ${otherHtml}
-        </div>
-      </div>
-    `;
-  }).join('');
+  const submitNavIndex = pq.questions.length;
 
   return `
     <div class="composer question-panel" data-request-id="${pq.requestId}">
-      ${questionsHtml}
-      <div class="approval-hint">Esc to cancel</div>
+      <div class="question-nav">
+        ${navHtml}
+        <button
+          class="question-nav-item question-submit-item"
+          type="button"
+          data-nav-idx="${submitNavIndex}"
+        >
+          Submit answers
+        </button>
+      </div>
+      <div class="question-stage"></div>
+      <div class="question-review"></div>
+      <div class="question-submit-error"></div>
+      <div class="approval-hint question-hint">Enter to select · Left/Right to switch question · Esc to cancel</div>
     </div>
   `;
 }
