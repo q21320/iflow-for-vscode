@@ -8,7 +8,13 @@ interface ProcessManagerLike {
   hasProcess: boolean;
   stopManagedProcess(): void;
   resolveStartMode(config: { nodePath: string | null; port: number }): Promise<{ nodePath: string; iflowScript: string; port: number } | null>;
-  startManagedProcess(nodePath: string, port: number, iflowScript?: string, cwd?: string): Promise<void>;
+  startManagedProcess(
+    nodePath: string,
+    port: number,
+    iflowScript?: string,
+    cwd?: string,
+    enableStream?: boolean,
+  ): Promise<void>;
 }
 
 interface SessionCoordinatorDependencies {
@@ -140,6 +146,7 @@ export class SessionCoordinator {
 
     const port = this.deps.getConfig<number>('port', 8090);
     const timeout = this.deps.getConfig<number>('timeout', 60000);
+    const enableCliStream = this.deps.getConfig<boolean>('enableCliStream', true);
 
     const processManager = this.deps.getProcessManager();
     if (!processManager.hasProcess) {
@@ -154,6 +161,7 @@ export class SessionCoordinator {
           startInfo.port,
           startInfo.iflowScript,
           options.cwd,
+          enableCliStream,
         );
       } else {
         throw new Error(

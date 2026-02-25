@@ -16,6 +16,10 @@ import { estimateConversationContextUsage, ContextUsage } from './store/contextU
 
 const STORAGE_KEY = 'iflow.conversations';
 
+interface AppendAssistantOptions {
+  notify?: boolean;
+}
+
 export class ConversationStore {
   private state: ConversationState;
   private readonly memento: vscode.Memento;
@@ -285,7 +289,8 @@ export class ConversationStore {
     return message;
   }
 
-  appendToAssistantMessage(chunk: StreamChunk): void {
+  appendToAssistantMessage(chunk: StreamChunk, options: AppendAssistantOptions = {}): void {
+    const shouldNotify = options.notify ?? true;
     const conversation = this.getCurrentConversation();
     if (!conversation) {
       return;
@@ -293,7 +298,9 @@ export class ConversationStore {
 
     if (chunk.chunkType === 'usage') {
       if (this.updateAcpUsage(conversation, chunk)) {
-        this.notifyChange();
+        if (shouldNotify) {
+          this.notifyChange();
+        }
       }
       return;
     }
@@ -315,9 +322,13 @@ export class ConversationStore {
       return { ...current, messages };
     });
 
-    if (updated) {
+    if (updated && shouldNotify) {
       this.notifyChange();
     }
+  }
+
+  publishState(): void {
+    this.notifyChange();
   }
 
   endAssistantMessage(): void {

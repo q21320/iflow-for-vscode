@@ -3,7 +3,7 @@ import { SendMessagePipeline } from '../webview/sendMessagePipeline';
 import { ConversationStore } from '../store';
 import { PlanApprovalCoordinator } from '../webview/planApprovalCoordinator';
 import { PlanModeOrchestrator } from '../webview/planModeOrchestrator';
-import { ExtensionMessage, StreamChunk } from '../protocol';
+import { ConversationState, ExtensionMessage, StreamChunk } from '../protocol';
 import { RunOptions } from '../acp/types';
 
 class FakeMemento {
@@ -28,79 +28,212 @@ class FakeMemento {
   }
 }
 
+type RunImplementation = (
+  options: RunOptions,
+  onChunk: (chunk: StreamChunk) => void,
+  onEnd: () => void,
+  onError: (error: string) => void,
+) => Promise<string | undefined>;
+
 class FakeClient {
   runCalls: RunOptions[] = [];
+
+  constructor(private readonly impl?: RunImplementation) {}
 
   async run(
     options: RunOptions,
     onChunk: (chunk: StreamChunk) => void,
     onEnd: () => void,
-    _onError: (error: string) => void,
+    onError: (error: string) => void,
   ): Promise<string | undefined> {
     this.runCalls.push(options);
-    if (options.prompt.includes('emit-plan')) {
-      onChunk({
-        chunkType: 'plan_approval',
-        requestId: 55,
-        plan: 'mock plan',
-      });
+    if (this.impl) {
+      return this.impl(options, onChunk, onEnd, onError);
     }
     onEnd();
     return `session-${this.runCalls.length}`;
   }
 }
 
-suite('SendMessagePipeline', () => {
-  test('short-circuits when CLI is unavailable', async () => {
-    const store = new ConversationStore(
-      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
-      () => {},
-    );
-    store.newConversation();
+function createStore(onStateChange?: (state: ConversationState) => void): ConversationStore {
+  const store = new ConversationStore(
+    new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
+    (state) => {
+      onStateChange?.(state);
+    },
+  );
+  store.newConversation();
+  return store;
+}
 
-    const client = new FakeClient();
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+suite('SendMessagePipeline', () => {
+  test('emits streamStatus phases while waiting for first chunk', async () => {
+    const store = createStore();
     const messages: ExtensionMessage[] = [];
+    const client = new FakeClient(async (_options, onChunk, onEnd) => {
+      await sleep(350);
+      onChunk({ chunkType: 'text', content: 'hello' });
+      onEnd();
+      return 'session-1';
+    });
+
     const pipeline = new SendMessagePipeline({
       store,
       client: client as unknown as import('../acpClient').AcpClient,
-      authService: { ensureValidToken: async () => false } as unknown as import('../authService').AuthService,
       postMessage: (message) => messages.push(message),
-      checkCliForSend: async () => ({ available: false, error: 'cli down' }),
       markCliUnavailable: () => {},
       resolveWorkspaceFolder: () => '/tmp/workspace',
       getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
       getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 50,
       planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
       debug: () => {},
       setSessionId: (sessionId) => store.setSessionId(sessionId),
     });
 
     await pipeline.execute({
-      content: 'hello',
+      content: 'slow first chunk',
       attachedFiles: [],
       silent: false,
     });
 
-    assert.strictEqual(client.runCalls.length, 0);
-    assert.ok(messages.some((m) => m.type === 'streamError'));
+    const phases = messages
+      .filter((m): m is Extract<ExtensionMessage, { type: 'streamStatus' }> => m.type === 'streamStatus')
+      .map((m) => m.phase);
+    assert.deepStrictEqual(phases, ['preparing', 'connecting', 'waiting_first_chunk']);
+    assert.ok(messages.some((m) => m.type === 'streamChunk'));
+    assert.ok(messages.some((m) => m.type === 'streamEnd'));
+  });
+
+  test('skips workspace file scan when autoIncludeWorkspaceFiles is disabled', async () => {
+    const store = createStore();
+    const client = new FakeClient();
+    let workspaceFileListCalls = 0;
+
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: client as unknown as import('../acpClient').AcpClient,
+      postMessage: () => {},
+      markCliUnavailable: () => {},
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async () => {
+        workspaceFileListCalls += 1;
+        return ['should-not-be-used.ts'];
+      },
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 50,
+      planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+    });
+
+    await pipeline.execute({
+      content: 'no workspace scan',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    assert.strictEqual(workspaceFileListCalls, 0);
+    assert.deepStrictEqual(client.runCalls[0]?.workspaceFiles, []);
+  });
+
+  test('uses configured workspace file limit when autoIncludeWorkspaceFiles is enabled', async () => {
+    const store = createStore();
+    const client = new FakeClient();
+    let capturedLimit: number | undefined;
+
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: client as unknown as import('../acpClient').AcpClient,
+      postMessage: () => {},
+      markCliUnavailable: () => {},
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async (_cwd, limit) => {
+        capturedLimit = limit;
+        return ['src/main.ts'];
+      },
+      shouldIncludeWorkspaceFiles: () => true,
+      getWorkspaceFilesLimit: () => 42,
+      getStreamRenderIntervalMs: () => 50,
+      planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+    });
+
+    await pipeline.execute({
+      content: 'with workspace scan',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    assert.strictEqual(capturedLimit, 42);
+    assert.deepStrictEqual(client.runCalls[0]?.workspaceFiles, ['src/main.ts']);
+  });
+
+  test('adds Re-check CLI hint when connectivity error occurs', async () => {
+    const store = createStore();
+    const messages: ExtensionMessage[] = [];
+    const markCliUnavailableCalls: string[] = [];
+    const failingClient = new FakeClient(async (_options, _onChunk, _onEnd, onError) => {
+      onError('connect ECONNREFUSED 127.0.0.1:8090');
+      return undefined;
+    });
+
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: failingClient as unknown as import('../acpClient').AcpClient,
+      postMessage: (message) => messages.push(message),
+      markCliUnavailable: (diagnostics) => {
+        markCliUnavailableCalls.push(diagnostics);
+      },
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 50,
+      planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+    });
+
+    await pipeline.execute({
+      content: 'trigger connect error',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    assert.strictEqual(markCliUnavailableCalls.length, 1);
+    const streamError = messages.find((m) => m.type === 'streamError') as Extract<ExtensionMessage, { type: 'streamError' }> | undefined;
+    assert.ok(streamError);
+    assert.ok(streamError?.error.includes('Re-check CLI'));
+    assert.strictEqual(failingClient.runCalls.length, 1);
   });
 
   test('replays approved plan via queue without recursive send', async () => {
-    const store = new ConversationStore(
-      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
-      () => {},
-    );
-    store.newConversation();
+    const store = createStore();
     store.setMode('plan');
 
-    const client = new FakeClient();
+    const client = new FakeClient(async (options, _onChunk, onEnd) => {
+      onEnd();
+      return `session-${options.mode}`;
+    });
+
     const messages: ExtensionMessage[] = [];
     const planApprovalCoordinator = new PlanApprovalCoordinator(new PlanModeOrchestrator());
 
     const pipeline = new SendMessagePipeline({
       store,
       client: client as unknown as import('../acpClient').AcpClient,
-      authService: { ensureValidToken: async () => true } as unknown as import('../authService').AuthService,
       postMessage: (message) => {
         messages.push(message);
         if (message.type === 'streamChunk'
@@ -109,11 +242,13 @@ suite('SendMessagePipeline', () => {
           planApprovalCoordinator.registerSyntheticApproval('smart');
         }
       },
-      checkCliForSend: async () => ({ available: true, error: '' }),
       markCliUnavailable: () => {},
       resolveWorkspaceFolder: () => '/tmp/workspace',
       getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
       getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 50,
       planApprovalCoordinator,
       debug: () => {},
       setSessionId: (sessionId) => store.setSessionId(sessionId),
@@ -133,35 +268,24 @@ suite('SendMessagePipeline', () => {
   });
 
   test('normalizes empty runtime errors before emitting streamError', async () => {
-    const store = new ConversationStore(
-      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
-      () => {},
-    );
-    store.newConversation();
-
+    const store = createStore();
     const messages: ExtensionMessage[] = [];
-    const failingClient = {
-      run: async (
-        _options: RunOptions,
-        _onChunk: (chunk: StreamChunk) => void,
-        _onEnd: () => void,
-        onError: (error: string) => void,
-      ) => {
-        onError('   ');
-        return undefined;
-      },
-    };
+    const failingClient = new FakeClient(async (_options, _onChunk, _onEnd, onError) => {
+      onError('   ');
+      return undefined;
+    });
 
     const pipeline = new SendMessagePipeline({
       store,
       client: failingClient as unknown as import('../acpClient').AcpClient,
-      authService: { ensureValidToken: async () => true } as unknown as import('../authService').AuthService,
       postMessage: (message) => messages.push(message),
-      checkCliForSend: async () => ({ available: true, error: '' }),
       markCliUnavailable: () => {},
       resolveWorkspaceFolder: () => '/tmp/workspace',
       getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
       getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 50,
       planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
       debug: () => {},
       setSessionId: (sessionId) => store.setSessionId(sessionId),
@@ -176,13 +300,111 @@ suite('SendMessagePipeline', () => {
     const streamError = messages.find((m) => m.type === 'streamError') as Extract<ExtensionMessage, { type: 'streamError' }> | undefined;
     assert.ok(streamError);
     assert.strictEqual(streamError?.error, 'Unknown error');
+  });
 
-    const conversation = store.getCurrentConversation();
-    assert.ok(conversation);
-    const lastMessage = conversation?.messages[conversation.messages.length - 1];
-    assert.ok(lastMessage && lastMessage.role === 'assistant');
-    const errorBlock = lastMessage?.blocks.find((b) => b.type === 'error') as Extract<NonNullable<typeof lastMessage>['blocks'][number], { type: 'error' }> | undefined;
-    assert.ok(errorBlock);
-    assert.strictEqual(errorBlock?.message, 'Unknown error');
+  test('throttles stateUpdated during streaming while preserving streamChunk count', async () => {
+    const messages: ExtensionMessage[] = [];
+    const store = createStore((state) => {
+      messages.push({ type: 'stateUpdated', state });
+    });
+
+    const client = new FakeClient(async (_options, onChunk, onEnd) => {
+      onChunk({ chunkType: 'text', content: 'a' });
+      await sleep(5);
+      onChunk({ chunkType: 'text', content: 'b' });
+      await sleep(5);
+      onChunk({ chunkType: 'text', content: 'c' });
+      await sleep(40);
+      onChunk({ chunkType: 'text', content: 'd' });
+      await sleep(5);
+      onChunk({ chunkType: 'text', content: 'e' });
+      onEnd();
+      return undefined;
+    });
+
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: client as unknown as import('../acpClient').AcpClient,
+      postMessage: (message) => messages.push(message),
+      markCliUnavailable: () => {},
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 30,
+      planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+    });
+
+    await pipeline.execute({
+      content: 'throttled output',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    const streamChunks = messages.filter(
+      (m): m is Extract<ExtensionMessage, { type: 'streamChunk' }> => m.type === 'streamChunk'
+    );
+    assert.strictEqual(streamChunks.length, 5);
+
+    const stateUpdates = messages.filter(
+      (m): m is Extract<ExtensionMessage, { type: 'stateUpdated' }> => m.type === 'stateUpdated'
+    );
+    const streamingStateUpdates = stateUpdates.filter((m) => m.state.isStreaming);
+    assert.ok(streamingStateUpdates.length >= 2);
+    assert.ok(streamingStateUpdates.length < streamChunks.length);
+
+    const beforeWaitCount = stateUpdates.length;
+    await sleep(80);
+    const afterWaitCount = messages.filter((m) => m.type === 'stateUpdated').length;
+    assert.strictEqual(afterWaitCount, beforeWaitCount);
+  });
+
+  test('cleans up pending throttled updates on streamError', async () => {
+    const messages: ExtensionMessage[] = [];
+    const store = createStore((state) => {
+      messages.push({ type: 'stateUpdated', state });
+    });
+
+    const failingClient = new FakeClient(async (_options, onChunk, _onEnd, onError) => {
+      onChunk({ chunkType: 'text', content: 'partial' });
+      onError('connect ECONNREFUSED 127.0.0.1:8090');
+      return undefined;
+    });
+
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: failingClient as unknown as import('../acpClient').AcpClient,
+      postMessage: (message) => messages.push(message),
+      markCliUnavailable: () => {},
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 30,
+      planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+    });
+
+    await pipeline.execute({
+      content: 'trigger error cleanup',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    const stateUpdates = messages.filter(
+      (m): m is Extract<ExtensionMessage, { type: 'stateUpdated' }> => m.type === 'stateUpdated'
+    );
+    assert.ok(stateUpdates.length > 0);
+    assert.strictEqual(stateUpdates[stateUpdates.length - 1].state.isStreaming, false);
+
+    const beforeWaitCount = stateUpdates.length;
+    await sleep(80);
+    const afterWaitCount = messages.filter((m) => m.type === 'stateUpdated').length;
+    assert.strictEqual(afterWaitCount, beforeWaitCount);
   });
 });

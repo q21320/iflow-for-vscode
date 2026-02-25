@@ -27,7 +27,6 @@ export class WebviewHandler {
   private readonly extensionUri: vscode.Uri;
   private webview: vscode.Webview | null = null;
   private disposables: vscode.Disposable[] = [];
-  private cliChecked = false;
   private selectionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private outputChannel: vscode.OutputChannel | null = null;
   private static readonly SELECTION_DEBOUNCE_MS = 300;
@@ -51,13 +50,14 @@ export class WebviewHandler {
     this.sendMessagePipeline = new SendMessagePipeline({
       store: this.store,
       client: this.client,
-      authService: this.authService,
       postMessage: (message) => this.postMessage(message),
-      checkCliForSend: async () => this.checkCliForSend(),
       markCliUnavailable: (diagnostics) => this.markCliUnavailable(diagnostics),
       resolveWorkspaceFolder: (conversation) => this.resolveWorkspaceFolder(conversation),
       getAllWorkspaceFolderPaths: () => this.getAllWorkspaceFolderPaths(),
-      getWorkspaceFileList: async (cwd) => this.getWorkspaceFileList(cwd),
+      getWorkspaceFileList: async (cwd, limit) => this.getWorkspaceFileList(cwd, limit),
+      shouldIncludeWorkspaceFiles: () => vscode.workspace.getConfiguration('iflow').get<boolean>('autoIncludeWorkspaceFiles', false),
+      getWorkspaceFilesLimit: () => vscode.workspace.getConfiguration('iflow').get<number>('workspaceFilesLimit', 80),
+      getStreamRenderIntervalMs: () => vscode.workspace.getConfiguration('iflow').get<number>('streamRenderIntervalMs', 50),
       planApprovalCoordinator: this.planApprovalCoordinator,
       debug: (message) => this.debug(message),
       setSessionId: (sessionId) => this.store.setSessionId(sessionId),
@@ -85,10 +85,10 @@ export class WebviewHandler {
         if (e.affectsConfiguration('iflow.nodePath') ||
             e.affectsConfiguration('iflow.baseUrl') ||
             e.affectsConfiguration('iflow.port') ||
-            e.affectsConfiguration('iflow.timeout')) {
+            e.affectsConfiguration('iflow.timeout') ||
+            e.affectsConfiguration('iflow.enableCliStream')) {
           await this.client.dispose();
           CliStatusService.invalidateSharedCliCheck();
-          this.cliChecked = false;
           await this.checkCliAvailability(true);
         }
       }
@@ -137,7 +137,6 @@ export class WebviewHandler {
         await this.client.dispose();
         this.client.clearAutoDetectCache();
         CliStatusService.invalidateSharedCliCheck();
-        this.cliChecked = false;
         await this.checkCliAvailability(true);
       },
       pickFiles: async () => this.handlePickFiles(),
@@ -293,14 +292,15 @@ export class WebviewHandler {
     }
   }
 
-  private async getWorkspaceFileList(cwd?: string): Promise<string[]> {
+  private async getWorkspaceFileList(cwd?: string, limit = 200): Promise<string[]> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) {
       return [];
     }
 
     const excludePattern = '**/node_modules/**,**/.git/**,**/dist/**,**/out/**';
-    const files = await vscode.workspace.findFiles('**/*', excludePattern, 200);
+    const normalizedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 200;
+    const files = await vscode.workspace.findFiles('**/*', excludePattern, normalizedLimit);
 
     const rootPath = cwd ?? workspaceFolders[0].uri.fsPath;
 
@@ -327,28 +327,9 @@ export class WebviewHandler {
     });
   }
 
-  private async checkCliForSend(): Promise<{ available: boolean; error: string }> {
-    if (!this.cliChecked) {
-      this.debug('CLI has not been checked yet in this handler instance; checking now');
-      await this.checkCliAvailability();
-      this.cliChecked = true;
-    }
-
-    if (this.store.getState().cliAvailable) {
-      return { available: true, error: '' };
-    }
-
-    this.cliChecked = false; // Retry check on next send.
-    return {
-      available: false,
-      error: 'IFlow CLI/ACP is not available. Please ensure iFlow CLI is installed and accessible in your PATH.',
-    };
-  }
-
   private markCliUnavailable(diagnostics: string): void {
     CliStatusService.cacheCliCheckResult({ version: null, diagnostics });
     this.store.setCliStatus(false, null, diagnostics);
-    this.cliChecked = false;
   }
 
   private syncWorkspaceFolders(): void {

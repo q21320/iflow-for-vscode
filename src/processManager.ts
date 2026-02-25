@@ -141,7 +141,13 @@ export class ProcessManager {
    * Start iFlow process manually with a specific Node path.
    * If iflowScript is provided, uses it directly; otherwise discovers it.
    */
-  async startManagedProcess(nodePath: string, port: number, iflowScript?: string, cwd?: string): Promise<void> {
+  async startManagedProcess(
+    nodePath: string,
+    port: number,
+    iflowScript?: string,
+    cwd?: string,
+    enableStream = true,
+  ): Promise<void> {
     if (!iflowScript) {
       const logFn = this.logInfo;
       const iflowPath = await findIFlowPathCrossPlatform(logFn);
@@ -155,11 +161,18 @@ export class ProcessManager {
       iflowScript = resolvedScript;
     }
 
-    this.log(`Starting iFlow with Node: ${nodePath}, script: ${iflowScript}, port: ${port}`);
-    this.log(`Command: ${nodePath} ${iflowScript} --experimental-acp --port ${port}`);
+    this.log(
+      `Starting iFlow with Node: ${nodePath}, script: ${iflowScript}, port: ${port}, stream=${enableStream}`
+    );
+    this.log(
+      `Command: ${nodePath} ${iflowScript} --experimental-acp --port ${port}${enableStream ? ' --stream' : ''}`
+    );
 
     return new Promise((resolve, reject) => {
       const args = [iflowScript!, '--experimental-acp', '--port', String(port)];
+      if (enableStream) {
+        args.push('--stream');
+      }
 
       // Buffer to collect output for error reporting
       const stdoutBuffer: string[] = [];

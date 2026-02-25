@@ -174,7 +174,12 @@ function renderModePopup(mode: ConversationMode, isThinking: boolean, showModeMe
 
 // ── Messages ────────────────────────────────────────────────────────
 
-export function renderMessages(conversation: Conversation | null, isStreaming: boolean, faviconUri: string): string {
+export function renderMessages(
+  conversation: Conversation | null,
+  isStreaming: boolean,
+  faviconUri: string,
+  pendingStatusText = 'Flowing...',
+): string {
   if (!conversation || conversation.messages.length === 0) {
     return `
       <div class="messages" id="messages-container">
@@ -191,7 +196,7 @@ export function renderMessages(conversation: Conversation | null, isStreaming: b
   return `
     <div class="messages" id="messages-container">
       ${conversation.messages.map(m => renderMessage(m)).join('')}
-      ${isStreaming ? renderPendingIndicator(faviconUri) : ''}
+      ${isStreaming ? renderPendingIndicator(faviconUri, pendingStatusText) : ''}
     </div>
   `;
 }
@@ -349,11 +354,11 @@ function renderPlanBlock(entries: Array<{ content: string; status: string; prior
   `;
 }
 
-export function renderPendingIndicator(faviconUri: string): string {
+export function renderPendingIndicator(faviconUri: string, statusText = 'Flowing...'): string {
   return `
     <div class="pending-indicator">
       <div class="bounce-logo"><img src="${faviconUri}" alt="IFlow" class="bounce-logo-icon" /></div>
-      <span>Flowing...</span>
+      <span>${escapeHtml(statusText)}</span>
     </div>
   `;
 }

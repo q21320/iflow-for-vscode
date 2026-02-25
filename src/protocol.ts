@@ -17,6 +17,8 @@ export const MODELS = [
 
 export type ModelType = typeof MODELS[number];
 
+export type StreamStatusPhase = 'preparing' | 'connecting' | 'waiting_first_chunk';
+
 // Context window sizes per model (from iFlow CLI's model configuration)
 export const MODEL_CONTEXT_SIZES: Record<ModelType, number> = {
   'GLM-4.7': 200000,
@@ -148,6 +150,7 @@ export type ExtensionMessage =
   | { type: 'workspaceFiles'; files: { path: string; name: string }[] }
   | { type: 'fileContents'; files: AttachedFile[] }
   | { type: 'stateUpdated'; state: ConversationState }
+  | { type: 'streamStatus'; phase: StreamStatusPhase; elapsedMs: number }
   | { type: 'streamChunk'; chunk: StreamChunk }
   | { type: 'streamEnd' }
   | { type: 'streamError'; error: string }

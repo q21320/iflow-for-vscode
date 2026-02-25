@@ -1,11 +1,14 @@
 import { AcpClient } from '../acpClient';
-import { AuthService } from '../authService';
 import { normalizeErrorMessage } from '../errorUtils';
 import { ConversationStore } from '../store';
-import { AttachedFile, Conversation, ExtensionMessage, IDEContext } from '../protocol';
+import { AttachedFile, Conversation, ExtensionMessage, IDEContext, StreamStatusPhase } from '../protocol';
 import { PlanApprovalCoordinator } from './planApprovalCoordinator';
 
 const PLAN_EXECUTION_REMINDER = '<system-reminder>\nPlan mode has been deactivated. The user approved the plan. You are now in execution mode. You may now freely use all tools including write_file, edit_file, run_shell_command, and other modification tools. Please proceed with the implementation.\n</system-reminder>';
+const WAITING_FIRST_CHUNK_STATUS_DELAY_MS = 300;
+const CLI_RECHECK_HINT = '未连接到 iFlow CLI，请 Re-check CLI。';
+const DEFAULT_STREAM_RENDER_INTERVAL_MS = 50;
+const MIN_STREAM_RENDER_INTERVAL_MS = 30;
 
 interface QueuedMessage {
   content: string;
@@ -14,28 +17,29 @@ interface QueuedMessage {
   ideContext?: IDEContext;
 }
 
-interface CliCheckResult {
-  available: boolean;
-  error: string;
-}
-
 interface SendMessagePipelineDependencies {
   store: ConversationStore;
   client: AcpClient;
-  authService: AuthService;
   postMessage: (message: ExtensionMessage) => void;
-  checkCliForSend: () => Promise<CliCheckResult>;
   markCliUnavailable: (diagnostics: string) => void;
   resolveWorkspaceFolder: (conversation: Conversation) => string | undefined;
   getAllWorkspaceFolderPaths: () => string[];
-  getWorkspaceFileList: (cwd?: string) => Promise<string[]>;
+  getWorkspaceFileList: (cwd?: string, limit?: number) => Promise<string[]>;
+  shouldIncludeWorkspaceFiles: () => boolean;
+  getWorkspaceFilesLimit: () => number;
+  getStreamRenderIntervalMs: () => number;
   planApprovalCoordinator: PlanApprovalCoordinator;
   debug: (message: string) => void;
   setSessionId: (sessionId: string) => void;
+  now?: () => number;
 }
 
 export class SendMessagePipeline {
-  constructor(private readonly deps: SendMessagePipelineDependencies) {}
+  private readonly now: () => number;
+
+  constructor(private readonly deps: SendMessagePipelineDependencies) {
+    this.now = deps.now ?? (() => Date.now());
+  }
 
   async execute(input: QueuedMessage): Promise<void> {
     const queue: QueuedMessage[] = [input];
@@ -52,9 +56,15 @@ export class SendMessagePipeline {
   }
 
   private async executeSingle(input: QueuedMessage): Promise<QueuedMessage[]> {
+    const sendStartedAt = this.now();
+    let runStartedAt = sendStartedAt;
+    let firstChunkAt: number | null = null;
+    let workspaceScanMs: number | null = null;
+
     this.deps.debug(
       `Send pipeline start: silent=${input.silent}, contentLength=${input.content.length}, attachedFiles=${input.attachedFiles.length}, hasIdeContext=${Boolean(input.ideContext)}`
     );
+    this.emitStreamStatus(sendStartedAt, 'preparing');
 
     this.deps.store.batchUpdate(() => {
       if (!input.silent) {
@@ -63,24 +73,6 @@ export class SendMessagePipeline {
       this.deps.store.startAssistantMessage();
       this.deps.store.setStreaming(true);
     });
-
-    const cli = await this.deps.checkCliForSend();
-    if (!cli.available) {
-      const cliError = normalizeErrorMessage(
-        cli.error,
-        'IFlow CLI/ACP is not available. Please ensure iFlow CLI is installed and accessible in your PATH.',
-      );
-      this.deps.store.batchUpdate(() => {
-        this.deps.store.appendToAssistantMessage({ chunkType: 'error', message: cliError });
-        this.deps.store.endAssistantMessage();
-        this.deps.store.setStreaming(false);
-      });
-      this.deps.postMessage({ type: 'streamError', error: cliError });
-      this.deps.debug('Send pipeline aborted because CLI is unavailable');
-      return [];
-    }
-
-    await this.deps.authService.ensureValidToken();
 
     const conversation = this.deps.store.getCurrentConversation();
     if (!conversation) {
@@ -94,59 +86,133 @@ export class SendMessagePipeline {
     }
 
     const fileAllowedDirs = this.deps.getAllWorkspaceFolderPaths();
-    const workspaceFiles = await this.deps.getWorkspaceFileList(cwd);
-    this.deps.debug(`Prepared run context: mode=${conversation.mode}, model=${conversation.model}, cwd=${cwd ?? 'n/a'}, workspaceFiles=${workspaceFiles.length}, allowedDirs=${fileAllowedDirs.length}`);
+    const autoIncludeWorkspaceFiles = this.deps.shouldIncludeWorkspaceFiles();
+    const workspaceFilesLimit = Math.max(1, this.deps.getWorkspaceFilesLimit());
+    let workspaceFiles: string[] = [];
+
+    if (autoIncludeWorkspaceFiles) {
+      const workspaceScanStartedAt = this.now();
+      workspaceFiles = await this.deps.getWorkspaceFileList(cwd, workspaceFilesLimit);
+      workspaceScanMs = this.now() - workspaceScanStartedAt;
+    }
+
+    this.deps.debug(
+      `Prepared run context: mode=${conversation.mode}, model=${conversation.model}, cwd=${cwd ?? 'n/a'}, workspaceFiles=${workspaceFiles.length}, autoIncludeWorkspaceFiles=${autoIncludeWorkspaceFiles}, workspaceFilesLimit=${workspaceFilesLimit}, allowedDirs=${fileAllowedDirs.length}`
+    );
 
     let runSucceeded = false;
-    this.deps.planApprovalCoordinator.startRun();
+    let runCompleted = false;
+    let firstChunkSeen = false;
+    const streamRenderIntervalMs = this.resolveStreamRenderIntervalMs();
+    let statePublishTimer: ReturnType<typeof setTimeout> | null = null;
+    let hasPendingStatePublish = false;
 
-    await this.deps.client.run(
-      {
-        prompt: input.content,
-        attachedFiles: input.attachedFiles,
-        mode: conversation.mode,
-        think: conversation.think,
-        model: conversation.model,
-        workspaceFiles,
-        sessionId: conversation.sessionId,
-        ideContext: input.ideContext,
-        cwd,
-        fileAllowedDirs,
-      },
-      (chunk) => {
-        this.deps.planApprovalCoordinator.onChunk(chunk);
-        this.deps.store.appendToAssistantMessage(chunk);
-        this.deps.postMessage({ type: 'streamChunk', chunk });
-      },
-      () => {
-        runSucceeded = true;
-        this.deps.debug('Run completed successfully');
-        this.deps.store.batchUpdate(() => {
-          this.deps.store.endAssistantMessage();
-          this.deps.store.setStreaming(false);
-        });
-        this.deps.postMessage({ type: 'streamEnd' });
-      },
-      (error) => {
-        const normalizedError = normalizeErrorMessage(error);
-        this.deps.debug(`Run failed: ${normalizedError}`);
-        if (this.shouldResetCli(normalizedError)) {
-          this.deps.markCliUnavailable(normalizedError);
-        }
-
-        this.deps.store.batchUpdate(() => {
-          this.deps.store.appendToAssistantMessage({ chunkType: 'error', message: normalizedError });
-          this.deps.store.endAssistantMessage();
-          this.deps.store.setStreaming(false);
-        });
-        this.deps.postMessage({ type: 'streamError', error: normalizedError });
-      },
-    ).then((returnedSessionId) => {
-      if (returnedSessionId) {
-        this.deps.debug(`Persisting ACP sessionId on conversation: ${returnedSessionId}`);
-        this.deps.setSessionId(returnedSessionId);
+    const clearStatePublishTimer = (): void => {
+      if (!statePublishTimer) {
+        return;
       }
-    });
+      clearTimeout(statePublishTimer);
+      statePublishTimer = null;
+    };
+
+    const flushPendingStatePublish = (): void => {
+      clearStatePublishTimer();
+      if (!hasPendingStatePublish) {
+        return;
+      }
+      hasPendingStatePublish = false;
+      this.deps.store.publishState();
+    };
+
+    const scheduleStatePublish = (): void => {
+      hasPendingStatePublish = true;
+      if (statePublishTimer) {
+        return;
+      }
+      statePublishTimer = setTimeout(() => {
+        statePublishTimer = null;
+        if (!hasPendingStatePublish) {
+          return;
+        }
+        hasPendingStatePublish = false;
+        this.deps.store.publishState();
+      }, streamRenderIntervalMs);
+    };
+
+    this.deps.planApprovalCoordinator.startRun();
+    runStartedAt = this.now();
+    this.emitStreamStatus(sendStartedAt, 'connecting');
+
+    const waitingStatusTimer = setTimeout(() => {
+      if (!firstChunkSeen && !runCompleted) {
+        this.emitStreamStatus(sendStartedAt, 'waiting_first_chunk');
+      }
+    }, WAITING_FIRST_CHUNK_STATUS_DELAY_MS);
+
+    try {
+      await this.deps.client.run(
+        {
+          prompt: input.content,
+          attachedFiles: input.attachedFiles,
+          mode: conversation.mode,
+          think: conversation.think,
+          model: conversation.model,
+          workspaceFiles,
+          sessionId: conversation.sessionId,
+          ideContext: input.ideContext,
+          cwd,
+          fileAllowedDirs,
+        },
+        (chunk) => {
+          if (!firstChunkSeen) {
+            firstChunkSeen = true;
+            firstChunkAt = this.now();
+          }
+          this.deps.planApprovalCoordinator.onChunk(chunk);
+          this.deps.store.appendToAssistantMessage(chunk, { notify: false });
+          this.deps.postMessage({ type: 'streamChunk', chunk });
+          scheduleStatePublish();
+        },
+        () => {
+          runCompleted = true;
+          runSucceeded = true;
+          flushPendingStatePublish();
+          this.logPerf(sendStartedAt, runStartedAt, firstChunkAt, workspaceScanMs);
+          this.deps.debug('Run completed successfully');
+          this.deps.store.batchUpdate(() => {
+            this.deps.store.endAssistantMessage();
+            this.deps.store.setStreaming(false);
+          });
+          this.deps.postMessage({ type: 'streamEnd' });
+        },
+        (error) => {
+          runCompleted = true;
+          flushPendingStatePublish();
+          let normalizedError = normalizeErrorMessage(error);
+          this.deps.debug(`Run failed: ${normalizedError}`);
+          if (this.shouldResetCli(normalizedError)) {
+            this.deps.markCliUnavailable(normalizedError);
+            normalizedError = this.appendCliReconnectHint(normalizedError);
+          }
+          this.logPerf(sendStartedAt, runStartedAt, firstChunkAt, workspaceScanMs);
+
+          this.deps.store.batchUpdate(() => {
+            this.deps.store.appendToAssistantMessage({ chunkType: 'error', message: normalizedError }, { notify: false });
+            this.deps.store.endAssistantMessage();
+            this.deps.store.setStreaming(false);
+          });
+          this.deps.postMessage({ type: 'streamError', error: normalizedError });
+        },
+      ).then((returnedSessionId) => {
+        if (returnedSessionId) {
+          this.deps.debug(`Persisting ACP sessionId on conversation: ${returnedSessionId}`);
+          this.deps.setSessionId(returnedSessionId);
+        }
+      });
+    } finally {
+      clearTimeout(waitingStatusTimer);
+      clearStatePublishTimer();
+    }
 
     if (!runSucceeded) {
       this.deps.planApprovalCoordinator.cancelWait();
@@ -192,10 +258,46 @@ export class SendMessagePipeline {
     }
   }
 
+  private emitStreamStatus(startedAt: number, phase: StreamStatusPhase): void {
+    this.deps.postMessage({
+      type: 'streamStatus',
+      phase,
+      elapsedMs: Math.max(0, this.now() - startedAt),
+    });
+  }
+
+  private appendCliReconnectHint(error: string): string {
+    if (error.includes('Re-check CLI') || error.includes('未连接到 iFlow CLI')) {
+      return error;
+    }
+    return `${error}\n${CLI_RECHECK_HINT}`;
+  }
+
+  private logPerf(
+    sendStartedAt: number,
+    runStartedAt: number,
+    firstChunkAt: number | null,
+    workspaceScanMs: number | null,
+  ): void {
+    const preflightMs = Math.max(0, runStartedAt - sendStartedAt);
+    const totalMs = Math.max(0, this.now() - sendStartedAt);
+    const ttft = firstChunkAt === null ? 'n/a' : `${Math.max(0, firstChunkAt - sendStartedAt)}ms`;
+    const workspaceScan = workspaceScanMs === null ? 'n/a' : `${Math.max(0, workspaceScanMs)}ms`;
+    this.deps.debug(`[perf] ttft=${ttft} preflight=${preflightMs}ms total=${totalMs}ms workspaceScan=${workspaceScan}`);
+  }
+
   private shouldResetCli(error: string): boolean {
     return error.includes('connect')
       || error.includes('ECONNREFUSED')
       || error.includes('not found')
       || error.includes('not available');
+  }
+
+  private resolveStreamRenderIntervalMs(): number {
+    const configured = this.deps.getStreamRenderIntervalMs();
+    if (!Number.isFinite(configured)) {
+      return DEFAULT_STREAM_RENDER_INTERVAL_MS;
+    }
+    return Math.max(MIN_STREAM_RENDER_INTERVAL_MS, Math.round(configured));
   }
 }

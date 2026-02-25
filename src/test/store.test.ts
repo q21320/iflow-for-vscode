@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { ConversationStore } from '../store';
-import { ModelType, MODELS } from '../protocol';
+import { ConversationState, ModelType, MODELS } from '../protocol';
 
 class FakeMemento {
   private value: unknown;
@@ -142,6 +142,54 @@ suite('ConversationStore', () => {
     assert.ok(state.contextUsage);
     assert.strictEqual(state.contextUsage?.usedTokens, 5000);
     assert.strictEqual(state.contextUsage?.totalTokens, 200000);
+  });
+
+  test('appendToAssistantMessage supports silent updates when notify=false', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    let notifyCount = 0;
+    const store = new ConversationStore(
+      memento as unknown as import('vscode').Memento,
+      () => { notifyCount += 1; },
+    );
+    store.newConversation();
+    store.startAssistantMessage();
+    notifyCount = 0;
+
+    store.appendToAssistantMessage({ chunkType: 'text', content: 'silent' }, { notify: false });
+
+    assert.strictEqual(notifyCount, 0);
+    const current = store.getCurrentConversation();
+    const lastMessage = current?.messages[current.messages.length - 1];
+    assert.strictEqual(lastMessage?.content, 'silent');
+  });
+
+  test('publishState emits current snapshot once', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    let notifyCount = 0;
+    let lastState: ConversationState | null = null;
+    const store = new ConversationStore(
+      memento as unknown as import('vscode').Memento,
+      (state) => {
+        notifyCount += 1;
+        lastState = state;
+      },
+    );
+    store.newConversation();
+    notifyCount = 0;
+    lastState = null;
+
+    store.publishState();
+
+    assert.strictEqual(notifyCount, 1);
+    assert.ok(lastState);
+    const emittedState = lastState as ConversationState;
+    assert.strictEqual(emittedState.currentConversationId, store.getCurrentConversation()?.id ?? null);
   });
 
   test('batchUpdate emits a single state change notification', () => {

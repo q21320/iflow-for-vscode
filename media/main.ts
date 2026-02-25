@@ -6,8 +6,9 @@ import type {
   ConversationState,
   WebviewMessage,
   ExtensionMessage,
-  IDEContext
+  IDEContext,
 } from '../src/protocol';
+import { formatStreamStatusText, reduceStreamStatus, StreamStatusSnapshot } from '../src/streamStatusUtils';
 import { escapeHtml } from './markdownRenderer';
 import { SlashMenuController } from './slashMenuController';
 import { InputController } from './inputController';
@@ -53,6 +54,7 @@ class IFlowApp implements AppHost {
   private pendingConfirmation: PendingConfirmation | null = null;
   private pendingQuestion: PendingQuestion | null = null;
   private pendingPlanApproval: PendingPlanApproval | null = null;
+  private streamStatus: StreamStatusSnapshot | null = null;
   private clearInputOnNextRender = false;
   private ideContext: IDEContext = { activeFile: null, selection: null };
   private ideContextDismissed = { activeFile: false, selection: false };
@@ -252,6 +254,10 @@ class IFlowApp implements AppHost {
         const previousConversationId = this.state?.currentConversationId ?? null;
         const wasStreaming = this.state?.isStreaming ?? false;
         this.state = message.state;
+        this.streamStatus = reduceStreamStatus(this.streamStatus, {
+          type: 'stateUpdated',
+          isStreaming: this.state.isStreaming,
+        });
         const conversationChanged = previousConversationId !== (this.state.currentConversationId ?? null);
         if (this.state.isStreaming && wasStreaming) {
           // During streaming, only update the last message instead of full DOM rebuild
@@ -279,6 +285,7 @@ class IFlowApp implements AppHost {
         break;
 
       case 'streamChunk':
+        this.streamStatus = reduceStreamStatus(this.streamStatus, { type: 'streamChunk' });
         // Streaming updates are handled by stateUpdated to avoid duplicate scroll work.
         // Exception: tool_confirmation needs to transform the composer into an approval UI.
         if (message.chunk.chunkType === 'tool_confirmation') {
@@ -303,6 +310,13 @@ class IFlowApp implements AppHost {
         }
         break;
 
+      case 'streamStatus':
+        this.streamStatus = reduceStreamStatus(this.streamStatus, message);
+        if (this.state?.isStreaming) {
+          this.updatePendingIndicator();
+        }
+        break;
+
       case 'streamEnd':
       case 'streamError':
         // No render() needed here — the stateUpdated with isStreaming=false
@@ -311,6 +325,7 @@ class IFlowApp implements AppHost {
         this.pendingConfirmation = null;
         this.pendingQuestion = null;
         this.pendingPlanApproval = null;
+        this.streamStatus = reduceStreamStatus(this.streamStatus, { type: message.type });
         break;
 
       case 'ideContextChanged': {
@@ -363,7 +378,12 @@ class IFlowApp implements AppHost {
     app.innerHTML = `
       <div class="container">
         ${renderTopBar(title, conversationPanelHtml)}
-        ${renderMessages(conversation, this.state?.isStreaming ?? false, this.faviconUri)}
+        ${renderMessages(
+          conversation,
+          this.state?.isStreaming ?? false,
+          this.faviconUri,
+          this.getPendingIndicatorText(),
+        )}
         ${renderComposer({
           conversation,
           isStreaming: this.state?.isStreaming ?? false,
@@ -467,14 +487,7 @@ class IFlowApp implements AppHost {
     }
 
     // Update pending indicator
-    const existingIndicator = container.querySelector('.pending-indicator');
-    if (this.state?.isStreaming) {
-      if (!existingIndicator) {
-        container.insertAdjacentHTML('beforeend', renderPendingIndicator(this.faviconUri));
-      }
-    } else {
-      existingIndicator?.remove();
-    }
+    this.updatePendingIndicator(container);
 
     // Incrementally update composer status bar (mode label, thinking chip, model)
     this.updateComposerStatusBar();
@@ -550,6 +563,30 @@ class IFlowApp implements AppHost {
       modelSelect.value = currentModel;
       this.autoSizeSelect(modelSelect);
     }
+  }
+
+  private updatePendingIndicator(container?: Element): void {
+    const target = container ?? document.getElementById('messages-container');
+    if (!target) {
+      return;
+    }
+
+    const existingIndicator = target.querySelector('.pending-indicator');
+    if (this.state?.isStreaming) {
+      const indicatorHtml = renderPendingIndicator(this.faviconUri, this.getPendingIndicatorText());
+      if (existingIndicator) {
+        (existingIndicator as HTMLElement).outerHTML = indicatorHtml;
+      } else {
+        target.insertAdjacentHTML('beforeend', indicatorHtml);
+      }
+      return;
+    }
+
+    existingIndicator?.remove();
+  }
+
+  private getPendingIndicatorText(): string {
+    return formatStreamStatusText(this.streamStatus);
   }
 
   // ── Layout helpers ─────────────────────────────────────────────────

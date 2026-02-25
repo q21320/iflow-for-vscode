@@ -61,18 +61,23 @@ suite('ProcessManager WebSocket Readiness', () => {
   let wsBehavior: WsBehavior;
   let wsAttempts: number;
   let logs: string[];
+  let spawnedArgs: string[] | null;
 
   setup(() => {
     fakeProcess = new FakeChildProcess();
     wsBehavior = 'open';
     wsAttempts = 0;
     logs = [];
+    spawnedArgs = null;
 
     processManager = new ProcessManager(
       (message) => logs.push(message),
       (message) => logs.push(message),
       {
-        spawn: (() => fakeProcess) as any,
+        spawn: ((_: string, args: string[]) => {
+          spawnedArgs = [...args];
+          return fakeProcess;
+        }) as any,
         createWebSocket: (() => {
           wsAttempts += 1;
           return new FakeWebSocket(wsBehavior) as any;
@@ -157,5 +162,40 @@ suite('ProcessManager WebSocket Readiness', () => {
 
     await assert.doesNotReject(startPromise);
     assert.ok(logs.some((line) => line.includes('[WebSocket check] Attempt 1 failed')));
+  });
+
+  test('startManagedProcess includes --stream when enableStream=true', async () => {
+    const startPromise = processManager.startManagedProcess(
+      '/usr/bin/node',
+      8095,
+      '/usr/lib/iflow/entry.js',
+      undefined,
+      true,
+    );
+
+    setTimeout(() => {
+      fakeProcess.stdout.emitData('ready\n');
+    }, 20);
+
+    await assert.doesNotReject(startPromise);
+    assert.ok(spawnedArgs?.includes('--stream'));
+  });
+
+  test('startManagedProcess excludes --stream when enableStream=false', async () => {
+    const startPromise = processManager.startManagedProcess(
+      '/usr/bin/node',
+      8096,
+      '/usr/lib/iflow/entry.js',
+      undefined,
+      false,
+    );
+
+    setTimeout(() => {
+      fakeProcess.stdout.emitData('ready\n');
+    }, 20);
+
+    await assert.doesNotReject(startPromise);
+    assert.ok(spawnedArgs);
+    assert.strictEqual(spawnedArgs?.includes('--stream'), false);
   });
 });

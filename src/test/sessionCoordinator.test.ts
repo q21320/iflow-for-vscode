@@ -95,6 +95,44 @@ function baseRunOptions(overrides: Partial<RunOptions> = {}): RunOptions {
   };
 }
 
+function createProcessManagerRecorder(
+  startInfo: { nodePath: string; iflowScript: string; port: number } | null,
+): {
+  startCalls: Array<{ enableStream: boolean | undefined }>;
+  manager: {
+    hasProcess: boolean;
+    stopManagedProcess: () => void;
+    resolveStartMode: () => Promise<{ nodePath: string; iflowScript: string; port: number } | null>;
+    startManagedProcess: (
+      nodePath: string,
+      port: number,
+      iflowScript?: string,
+      cwd?: string,
+      enableStream?: boolean,
+    ) => Promise<void>;
+  };
+} {
+  const startCalls: Array<{ enableStream: boolean | undefined }> = [];
+
+  return {
+    startCalls,
+    manager: {
+      hasProcess: false,
+      stopManagedProcess: () => {},
+      resolveStartMode: async () => startInfo,
+      startManagedProcess: async (
+        _nodePath: string,
+        _port: number,
+        _iflowScript?: string,
+        _cwd?: string,
+        enableStream?: boolean,
+      ) => {
+        startCalls.push({ enableStream });
+      },
+    },
+  };
+}
+
 suite('SessionCoordinator', () => {
   test('establishes connection and reaches ready state', async () => {
     const snapshots: Array<{ snapshot: ConnectionSnapshot; reason: string }> = [];
@@ -255,5 +293,63 @@ suite('SessionCoordinator', () => {
     assert.strictEqual(coordinator.currentSessionId, null);
     assert.strictEqual(coordinator.connectionSnapshot.status, 'disconnected');
     assert.ok(reasons.includes('closed'));
+  });
+
+  test('passes enableCliStream=true to process manager by default', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+    const { startCalls, manager } = createProcessManagerRecorder({
+      nodePath: '/usr/bin/node',
+      iflowScript: '/usr/lib/iflow/entry.js',
+      port: 8090,
+    });
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => manager,
+      getConfig: <T>(key: string, defaultValue: T) => {
+        if (key === 'enableCliStream') {
+          return true as T;
+        }
+        return defaultValue;
+      },
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions());
+    assert.strictEqual(startCalls.length, 1);
+    assert.strictEqual(startCalls[0].enableStream, true);
+  });
+
+  test('passes enableCliStream=false to process manager when configured', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+    const { startCalls, manager } = createProcessManagerRecorder({
+      nodePath: '/usr/bin/node',
+      iflowScript: '/usr/lib/iflow/entry.js',
+      port: 8090,
+    });
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => manager,
+      getConfig: <T>(key: string, defaultValue: T) => {
+        if (key === 'enableCliStream') {
+          return false as T;
+        }
+        return defaultValue;
+      },
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions());
+    assert.strictEqual(startCalls.length, 1);
+    assert.strictEqual(startCalls[0].enableStream, false);
   });
 });
