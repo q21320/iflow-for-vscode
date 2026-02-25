@@ -184,18 +184,34 @@ export function attachComposerListeners(host: AppHost): void {
 // ── Content listeners (copy, collapsible) ───────────────────────────
 
 export function attachContentListeners(): void {
-  document.querySelectorAll('.copy-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const content = (btn as HTMLElement).dataset.content || '';
-      navigator.clipboard.writeText(content);
-    });
-  });
+  const body = document.body;
+  if (!body) {
+    return;
+  }
 
-  document.querySelectorAll('[data-collapsible]').forEach(header => {
-    header.addEventListener('click', () => {
-      const content = header.nextElementSibling;
+  if (body.dataset.contentListenersBound === '1') {
+    return;
+  }
+  body.dataset.contentListenersBound = '1';
+
+  body.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) {
+      return;
+    }
+
+    const copyBtn = target.closest('.copy-btn') as HTMLElement | null;
+    if (copyBtn) {
+      const content = copyBtn.dataset.content || '';
+      void navigator.clipboard.writeText(content);
+      return;
+    }
+
+    const collapsible = target.closest('[data-collapsible]') as HTMLElement | null;
+    if (collapsible) {
+      const content = collapsible.nextElementSibling;
       content?.classList.toggle('collapsed');
-    });
+    }
   });
 }
 

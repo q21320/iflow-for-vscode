@@ -1,3 +1,5 @@
+import { sanitizeMarkdownLinkHref } from '../src/markdownUrlPolicy';
+
 export function escapeHtml(text: string): string {
   const div = document.createElement('div');
   div.textContent = text;
@@ -9,7 +11,13 @@ function renderInline(text: string): string {
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
     .replace(/`(.*?)`/g, '<code>$1</code>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, href: string) => {
+      const safeHref = sanitizeMarkdownLinkHref(href);
+      if (!safeHref) {
+        return label;
+      }
+      return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    })
     .replace(/\n/g, '<br>');
 }
 

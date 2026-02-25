@@ -16,6 +16,8 @@ const thresholds = [
   { suffix: path.join('src', 'webview', 'sendMessagePipeline.ts'), minLines: 80 },
   { suffix: path.join('src', 'store.ts'), minLines: 80 },
   { suffix: path.join('src', 'authService.ts'), minLines: 40 },
+  { suffix: path.join('src', 'thinkingParser.ts'), minLines: 80 },
+  { suffix: path.join('src', 'webviewHandler.ts'), minLines: 45 },
 ];
 
 let hasFailure = false;

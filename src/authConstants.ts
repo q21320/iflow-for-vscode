@@ -12,3 +12,4 @@ export const SETTINGS_PATH = path.join(IFLOW_DIR, 'settings.json');
 export const OAUTH_SECRET_STORAGE_KEY = 'iflow.oauth.credentials.v1';
 export const TOKEN_REFRESH_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 export const OAUTH_CALLBACK_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+export const OAUTH_REQUEST_TIMEOUT_MS = 10 * 1000; // 10 seconds

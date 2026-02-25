@@ -217,6 +217,33 @@ suite('ConversationStore', () => {
     assert.strictEqual(current?.model, 'GLM-5');
   });
 
+  test('batchUpdate supports nested calls and emits once', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    let notifyCount = 0;
+    const store = new ConversationStore(
+      memento as unknown as import('vscode').Memento,
+      () => { notifyCount += 1; }
+    );
+
+    store.batchUpdate(() => {
+      store.setMode('smart');
+      store.batchUpdate(() => {
+        store.setThink(true);
+      });
+      store.setModel('GLM-5');
+    });
+
+    assert.strictEqual(notifyCount, 1);
+    const current = store.getCurrentConversation();
+    assert.ok(current);
+    assert.strictEqual(current?.mode, 'smart');
+    assert.strictEqual(current?.think, true);
+    assert.strictEqual(current?.model, 'GLM-5');
+  });
+
   test('deleteConversation reselects first remaining conversation when deleting active', () => {
     const memento = new FakeMemento({
       currentId: null,

@@ -150,7 +150,7 @@ export class SendMessagePipeline {
     }, WAITING_FIRST_CHUNK_STATUS_DELAY_MS);
 
     try {
-      await this.deps.client.run(
+      const returnedSessionId = await this.deps.client.run(
         {
           prompt: input.content,
           attachedFiles: input.attachedFiles,
@@ -203,12 +203,12 @@ export class SendMessagePipeline {
           });
           this.deps.postMessage({ type: 'streamError', error: normalizedError });
         },
-      ).then((returnedSessionId) => {
-        if (returnedSessionId) {
-          this.deps.debug(`Persisting ACP sessionId on conversation: ${returnedSessionId}`);
-          this.deps.setSessionId(returnedSessionId);
-        }
-      });
+      );
+
+      if (returnedSessionId) {
+        this.deps.debug(`Persisting ACP sessionId on conversation: ${returnedSessionId}`);
+        this.deps.setSessionId(returnedSessionId);
+      }
     } finally {
       clearTimeout(waitingStatusTimer);
       clearStatePublishTimer();

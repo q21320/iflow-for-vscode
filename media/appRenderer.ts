@@ -236,7 +236,7 @@ export function renderBlock(block: OutputBlock): string {
       return `
         <div class="block-code">
           <div class="code-header">
-            <span class="language">${block.language}${block.filename ? ` - ${block.filename}` : ''}</span>
+            <span class="language">${escapeHtml(block.language)}${block.filename ? ` - ${escapeHtml(block.filename)}` : ''}</span>
             <button class="copy-btn" data-content="${escapeAttr(block.content)}">Copy</button>
           </div>
           <pre><code>${escapeHtml(block.content)}</code></pre>

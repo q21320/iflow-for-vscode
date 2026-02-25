@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import { AuthService } from '../authService';
+import { OAUTH_USERINFO_URL } from '../authConstants';
 
 class FakeSecrets {
   private data = new Map<string, string>();
@@ -137,5 +138,37 @@ suite('AuthService', () => {
 
     const loggedIn = await service.isLoggedIn();
     assert.strictEqual(loggedIn, true);
+  });
+
+  test('fetchUserInfo sends access token in Authorization header', async () => {
+    const service = new AuthService(new FakeSecrets() as unknown as import('vscode').SecretStorage);
+    let capturedUrl = '';
+    let capturedHeaders: Record<string, string> | undefined;
+
+    (service as any).httpsGet = async (requestUrl: string, headers: Record<string, string>) => {
+      capturedUrl = requestUrl;
+      capturedHeaders = headers;
+      return { data: { apiKey: 'api-key' } };
+    };
+
+    const data = await (service as any).fetchUserInfo('token-abc');
+
+    assert.strictEqual(capturedUrl, OAUTH_USERINFO_URL);
+    assert.strictEqual(capturedHeaders?.Authorization, 'Bearer token-abc');
+    assert.strictEqual(data.apiKey, 'api-key');
+  });
+
+  test('exchangeCodeForTokens accepts numeric string expires_in', async () => {
+    const service = new AuthService(new FakeSecrets() as unknown as import('vscode').SecretStorage);
+    (service as any).httpsPost = async () => ({
+      access_token: 'token-a',
+      refresh_token: 'token-r',
+      expires_in: '3600',
+      token_type: 'bearer',
+      scope: 'read',
+    });
+
+    const response = await (service as any).exchangeCodeForTokens('code', 'http://localhost', 'verifier');
+    assert.strictEqual(response.expires_in, 3600);
   });
 });

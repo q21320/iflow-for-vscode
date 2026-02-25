@@ -30,11 +30,15 @@ export class InputController {
   // ── File handling ────────────────────────────────────────────────
 
   handlePickedFiles(files: { path: string; name: string }[]): void {
-    for (const file of files) {
-      if (!this.attachedFiles.find(f => f.path === file.path)) {
-        this.attachedFiles.push({ path: file.path });
-      }
+    const existingPaths = new Set(this.attachedFiles.map((file) => file.path));
+    const additions = files
+      .filter((file) => !existingPaths.has(file.path))
+      .map((file) => ({ path: file.path }));
+
+    if (additions.length > 0) {
+      this.attachedFiles = [...this.attachedFiles, ...additions];
     }
+
     this.host.postMessage({
       type: 'readFiles',
       paths: files.map(f => f.path)
@@ -43,13 +47,26 @@ export class InputController {
   }
 
   handleFileContents(files: AttachedFile[]): void {
-    for (const file of files) {
-      const existing = this.attachedFiles.find(f => f.path === file.path);
-      if (existing) {
-        existing.content = file.content;
-        existing.truncated = file.truncated;
+    const incomingByPath = new Map(files.map((file) => [file.path, file]));
+    let changed = false;
+
+    this.attachedFiles = this.attachedFiles.map((current) => {
+      const incoming = incomingByPath.get(current.path);
+      if (!incoming) {
+        return current;
       }
+      changed = true;
+      return {
+        ...current,
+        content: incoming.content,
+        truncated: incoming.truncated,
+      };
+    });
+
+    if (!changed) {
+      return;
     }
+
     this.renderAttachedFiles();
   }
 
@@ -186,7 +203,7 @@ export class InputController {
     document.querySelectorAll('.remove-file').forEach(btn => {
       btn.addEventListener('click', () => {
         const index = parseInt((btn as HTMLElement).dataset.index || '0', 10);
-        this.attachedFiles.splice(index, 1);
+        this.attachedFiles = this.attachedFiles.filter((_file, i) => i !== index);
         this.renderAttachedFiles();
       });
     });
@@ -219,7 +236,7 @@ export class InputController {
 
     // Add file to attachments
     if (!this.attachedFiles.find(f => f.path === filePath)) {
-      this.attachedFiles.push({ path: filePath });
+      this.attachedFiles = [...this.attachedFiles, { path: filePath }];
       this.host.postMessage({ type: 'readFiles', paths: [filePath] });
     }
 

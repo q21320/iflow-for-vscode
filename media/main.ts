@@ -468,22 +468,6 @@ class IFlowApp implements AppHost {
     const contentEl = lastMsgEl.querySelector('.message-content');
     if (contentEl) {
       contentEl.innerHTML = lastMsg.blocks.map(b => renderBlock(b)).join('');
-
-      // Re-attach collapsible listeners for this message only
-      lastMsgEl.querySelectorAll('[data-collapsible]').forEach(header => {
-        header.addEventListener('click', () => {
-          const next = header.nextElementSibling;
-          next?.classList.toggle('collapsed');
-        });
-      });
-
-      // Re-attach copy button listeners for this message only
-      lastMsgEl.querySelectorAll('.copy-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const copyContent = (btn as HTMLElement).dataset.content || '';
-          navigator.clipboard.writeText(copyContent);
-        });
-      });
     }
 
     // Update pending indicator

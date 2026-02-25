@@ -24,7 +24,7 @@ export class ConversationStore {
   private state: ConversationState;
   private readonly memento: vscode.Memento;
   private readonly onStateChange: (state: ConversationState) => void;
-  private suppressNotify = false;
+  private batchDepth = 0;
   private readonly acpUsedTokensByConversationId = new Map<string, number>();
 
   constructor(memento: vscode.Memento, onStateChange: (state: ConversationState) => void) {
@@ -381,19 +381,21 @@ export class ConversationStore {
   }
 
   private notifyChange(): void {
-    if (!this.suppressNotify) {
+    if (this.batchDepth === 0) {
       this.onStateChange(this.getState());
     }
   }
 
   batchUpdate(fn: () => void): void {
-    this.suppressNotify = true;
+    this.batchDepth += 1;
     try {
       fn();
     } finally {
-      this.suppressNotify = false;
+      this.batchDepth = Math.max(0, this.batchDepth - 1);
     }
-    this.notifyChange();
+    if (this.batchDepth === 0) {
+      this.notifyChange();
+    }
   }
 
   private updateCurrentConversation(updater: (conversation: Conversation) => Conversation): Conversation | null {

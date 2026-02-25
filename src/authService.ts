@@ -16,6 +16,7 @@ import {
   TOKEN_REFRESH_THRESHOLD_MS,
   OAUTH_CALLBACK_TIMEOUT_MS,
   OAUTH_SECRET_STORAGE_KEY,
+  OAUTH_REQUEST_TIMEOUT_MS,
 } from './authConstants';
 
 /** Shape of persisted OAuth credentials. */
@@ -347,9 +348,8 @@ export class AuthService {
       const settings: Record<string, unknown> = JSON.parse(
         fs.readFileSync(SETTINGS_PATH, 'utf-8')
       );
-      delete settings.selectedAuthType;
-      delete settings.apiKey;
-      const content = JSON.stringify(settings, null, 2);
+      const { selectedAuthType: _selectedAuthType, apiKey: _apiKey, ...rest } = settings;
+      const content = JSON.stringify(rest, null, 2);
       if (process.platform === 'win32') {
         fs.writeFileSync(SETTINGS_PATH, content, 'utf-8');
       } else {
@@ -400,15 +400,19 @@ export class AuthService {
         const state = parsed.query.state as string | undefined;
 
         if (!code || !state) {
+          clearTimeout(timeout);
           res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
           res.end('<html><body><h2>Authentication failed</h2><p>Missing code or state parameter.</p></body></html>');
+          server.close();
           reject(new Error('Missing code or state in OAuth callback'));
           return;
         }
 
         if (state !== expectedState) {
+          clearTimeout(timeout);
           res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
           res.end('<html><body><h2>Authentication failed</h2><p>State mismatch (possible CSRF attack).</p></body></html>');
+          server.close();
           reject(new Error('OAuth state mismatch'));
           return;
         }
@@ -422,6 +426,8 @@ export class AuthService {
         </body></html>`);
 
         const port = (server.address() as { port: number }).port;
+        clearTimeout(timeout);
+        server.close();
         resolve({ code, port });
       });
 
@@ -502,16 +508,16 @@ export class AuthService {
     return {
       access_token: response.access_token as string,
       refresh_token: response.refresh_token as string,
-      expires_in: response.expires_in as number,
+      expires_in: this.parseExpiresInSeconds(response.expires_in),
       token_type: (response.token_type as string) || 'bearer',
       scope: (response.scope as string) || 'read',
     };
   }
 
   private async fetchUserInfo(accessToken: string): Promise<UserInfoResponse> {
-    const response = await this.httpsGet(
-      `${OAUTH_USERINFO_URL}?accessToken=${encodeURIComponent(accessToken)}`
-    );
+    const response = await this.httpsGet(OAUTH_USERINFO_URL, {
+      Authorization: `Bearer ${accessToken}`,
+    });
 
     const data = (response.data ?? response) as Record<string, unknown>;
     if (!data.apiKey) {
@@ -542,7 +548,7 @@ export class AuthService {
     return {
       access_token: response.access_token as string,
       refresh_token: (response.refresh_token as string) || refreshToken,
-      expires_in: response.expires_in as number,
+      expires_in: this.parseExpiresInSeconds(response.expires_in),
       token_type: (response.token_type as string) || 'bearer',
       scope: (response.scope as string) || 'read',
     };
@@ -551,65 +557,110 @@ export class AuthService {
   // ── Private: HTTPS helpers ────────────────────────────────────
 
   private httpsPost(requestUrl: string, params: Record<string, string>): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-      const body = Object.entries(params)
-        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-        .join('&');
+    const body = Object.entries(params)
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join('&');
 
-      const parsed = new url.URL(requestUrl);
-      const options: https.RequestOptions = {
-        hostname: parsed.hostname,
-        port: parsed.port || 443,
-        path: parsed.pathname + parsed.search,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Content-Length': Buffer.byteLength(body),
-        },
-      };
+    const parsed = new url.URL(requestUrl);
+    const options: https.RequestOptions = {
+      hostname: parsed.hostname,
+      port: parsed.port || 443,
+      path: parsed.pathname + parsed.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    };
+
+    return this.sendHttpsRequest(options, body);
+  }
+
+  private httpsGet(
+    requestUrl: string,
+    headers: Record<string, string> = {},
+  ): Promise<Record<string, unknown>> {
+    const parsed = new url.URL(requestUrl);
+    const options: https.RequestOptions = {
+      hostname: parsed.hostname,
+      port: parsed.port || 443,
+      path: parsed.pathname + parsed.search,
+      method: 'GET',
+      headers,
+    };
+    return this.sendHttpsRequest(options);
+  }
+
+  private sendHttpsRequest(
+    options: https.RequestOptions,
+    body?: string,
+  ): Promise<Record<string, unknown>> {
+    const timeoutMs = this.getOAuthRequestTimeoutMs();
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const method = options.method ?? 'GET';
+      const pathForLog = options.path ?? '/';
 
       const req = https.request(options, (res) => {
         let data = '';
+        res.setEncoding('utf8');
         res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
         res.on('end', () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          const statusCode = res.statusCode ?? 0;
+          if (statusCode >= 400) {
+            reject(new Error(`HTTPS ${method} ${pathForLog} failed with status ${statusCode}: ${data.substring(0, 200)}`));
+            return;
+          }
           try {
-            resolve(JSON.parse(data));
+            resolve(data ? JSON.parse(data) : {});
           } catch (err) {
             reject(new Error(`Invalid JSON response: ${data.substring(0, 200)}; parser error: ${err instanceof Error ? err.message : String(err)}`));
           }
         });
       });
 
-      req.on('error', reject);
-      req.write(body);
+      req.setTimeout(timeoutMs, () => {
+        req.destroy(new Error(`HTTPS ${method} ${pathForLog} timed out after ${timeoutMs}ms`));
+      });
+      req.on('error', (err) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(new Error(`HTTPS ${method} ${pathForLog} failed: ${err.message}`));
+      });
+      if (body !== undefined) {
+        req.write(body);
+      }
       req.end();
     });
   }
 
-  private httpsGet(requestUrl: string): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-      const parsed = new url.URL(requestUrl);
-      const options: https.RequestOptions = {
-        hostname: parsed.hostname,
-        port: parsed.port || 443,
-        path: parsed.pathname + parsed.search,
-        method: 'GET',
-      };
+  private getOAuthRequestTimeoutMs(): number {
+    const configured = vscode.workspace
+      .getConfiguration('iflow')
+      .get<number>('oauthRequestTimeoutMs', OAUTH_REQUEST_TIMEOUT_MS);
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return OAUTH_REQUEST_TIMEOUT_MS;
+    }
+    return Math.round(configured);
+  }
 
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-        res.on('end', () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch (err) {
-            reject(new Error(`Invalid JSON response: ${data.substring(0, 200)}; parser error: ${err instanceof Error ? err.message : String(err)}`));
-          }
-        });
-      });
-
-      req.on('error', reject);
-      req.end();
-    });
+  private parseExpiresInSeconds(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.round(value);
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.round(parsed);
+      }
+    }
+    throw new Error(`Invalid OAuth expires_in value: ${String(value)}`);
   }
 }

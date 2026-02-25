@@ -237,11 +237,12 @@ export class WebviewHandler {
       return;
     }
 
-    const pattern = query ? `**/*${query}*` : '**/*';
+    const safeQuery = query.replace(/[\\*?[\]{}]/g, '');
+    const pattern = safeQuery ? `**/*${safeQuery}*` : '**/*';
     const excludePattern = '**/node_modules/**,**/.git/**,**/dist/**,**/out/**';
 
     const files = await vscode.workspace.findFiles(pattern, excludePattern, 50);
-    this.debug(`Workspace file search: query="${query}", results=${files.length}`);
+    this.debug(`Workspace file search: query="${safeQuery}", results=${files.length}`);
 
     this.postMessage({
       type: 'workspaceFiles',
@@ -259,24 +260,29 @@ export class WebviewHandler {
 
     for (const filePath of paths) {
       try {
-        const stat = await fs.promises.stat(filePath);
+        const safePath = await this.validateWorkspacePath(filePath);
+        const stat = await fs.promises.stat(safePath);
         const truncated = stat.size > maxBytes;
 
         let content: string;
         if (truncated) {
           const buffer = Buffer.alloc(maxBytes);
-          const fd = await fs.promises.open(filePath, 'r');
-          await fd.read(buffer, 0, maxBytes, 0);
-          await fd.close();
-          content = buffer.toString('utf-8');
+          const fd = await fs.promises.open(safePath, 'r');
+          try {
+            const { bytesRead } = await fd.read(buffer, 0, maxBytes, 0);
+            content = buffer.toString('utf-8', 0, bytesRead);
+          } finally {
+            await fd.close();
+          }
         } else {
-          content = await fs.promises.readFile(filePath, 'utf-8');
+          content = await fs.promises.readFile(safePath, 'utf-8');
         }
 
-        files.push({ path: filePath, content, truncated });
-      } catch {
-        this.debug(`Failed to read attached file: ${filePath}`);
-        files.push({ path: filePath, content: '[Error reading file]', truncated: false });
+        files.push({ path: safePath, content, truncated });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Error reading file';
+        this.debug(`Failed to read attached file: ${filePath}: ${message}`);
+        files.push({ path: filePath, content: `[${message}]`, truncated: false });
       }
     }
 
@@ -285,7 +291,8 @@ export class WebviewHandler {
 
   private async handleOpenFile(filePath: string): Promise<void> {
     try {
-      await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(filePath));
+      const safePath = await this.validateWorkspacePath(filePath);
+      await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(safePath));
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.debug(`Failed to open file ${filePath}: ${msg}`);
@@ -418,5 +425,41 @@ export class WebviewHandler {
 
     this.outputChannel.appendLine(`[WebviewHandler] ${message}`);
     console.debug(`[IFlow][WebviewHandler] ${message}`);
+  }
+
+  private async validateWorkspacePath(filePath: string): Promise<string> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      throw new Error('Access denied: no workspace folder available');
+    }
+
+    const absolutePath = path.resolve(filePath);
+    const canonicalTarget = await this.canonicalizePath(absolutePath);
+    const canonicalRoots = await Promise.all(
+      workspaceFolders.map((folder) => this.canonicalizePath(folder.uri.fsPath)),
+    );
+
+    const isAllowed = canonicalRoots.some((root) => this.isSubPath(root, canonicalTarget));
+    if (!isAllowed) {
+      throw new Error(`Access denied: ${filePath} is outside workspace folders`);
+    }
+
+    return canonicalTarget;
+  }
+
+  private async canonicalizePath(inputPath: string): Promise<string> {
+    try {
+      return await fs.promises.realpath(inputPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Path does not exist: ${inputPath} (${message})`);
+    }
+  }
+
+  private isSubPath(parentPath: string, childPath: string): boolean {
+    const parent = process.platform === 'win32' ? parentPath.toLowerCase() : parentPath;
+    const child = process.platform === 'win32' ? childPath.toLowerCase() : childPath;
+    const relative = path.relative(parent, child);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
   }
 }
