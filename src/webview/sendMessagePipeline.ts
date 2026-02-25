@@ -1,7 +1,7 @@
 import { AcpClient } from '../acpClient';
 import { normalizeErrorMessage } from '../errorUtils';
 import { ConversationStore } from '../store';
-import { AttachedFile, Conversation, ExtensionMessage, IDEContext, StreamStatusPhase } from '../protocol';
+import { AttachedFile, Conversation, ExtensionMessage, IDEContext, StreamChunk, StreamStatusPhase } from '../protocol';
 import { PlanApprovalCoordinator } from './planApprovalCoordinator';
 import {
   DEFAULT_STREAM_RENDER_INTERVAL_MS,
@@ -19,6 +19,17 @@ interface QueuedMessage {
   ideContext?: IDEContext;
 }
 
+interface RunLifecycleContext {
+  conversationId: string;
+  assistantMessageId: string;
+  cwd?: string;
+  allowedDirs: string[];
+}
+
+interface RunFinalizeContext extends RunLifecycleContext {
+  succeeded: boolean;
+}
+
 interface SendMessagePipelineDependencies {
   store: ConversationStore;
   client: AcpClient;
@@ -33,6 +44,9 @@ interface SendMessagePipelineDependencies {
   planApprovalCoordinator: PlanApprovalCoordinator;
   debug: (message: string) => void;
   setSessionId: (sessionId: string) => void;
+  onRunStart?: (context: RunLifecycleContext) => void;
+  onChunk?: (chunk: StreamChunk, context: RunLifecycleContext) => void;
+  onRunFinalize?: (context: RunFinalizeContext) => void;
   now?: () => number;
 }
 
@@ -68,11 +82,13 @@ export class SendMessagePipeline {
     );
     this.emitStreamStatus(sendStartedAt, 'preparing');
 
+    let assistantMessageId = '';
     this.deps.store.batchUpdate(() => {
       if (!input.silent) {
         this.deps.store.addUserMessage(input.content, input.attachedFiles);
       }
-      this.deps.store.startAssistantMessage();
+      const assistantMessage = this.deps.store.startAssistantMessage();
+      assistantMessageId = assistantMessage.id;
       this.deps.store.setStreaming(true);
     });
 
@@ -101,9 +117,17 @@ export class SendMessagePipeline {
     this.deps.debug(
       `Prepared run context: mode=${conversation.mode}, model=${conversation.model}, cwd=${cwd ?? 'n/a'}, workspaceFiles=${workspaceFiles.length}, autoIncludeWorkspaceFiles=${autoIncludeWorkspaceFiles}, workspaceFilesLimit=${workspaceFilesLimit}, allowedDirs=${fileAllowedDirs.length}`
     );
+    const runContext: RunLifecycleContext = {
+      conversationId: conversation.id,
+      assistantMessageId,
+      cwd,
+      allowedDirs: fileAllowedDirs,
+    };
+    this.deps.onRunStart?.(runContext);
 
     let runSucceeded = false;
     let runCompleted = false;
+    let runFinalizeCalled = false;
     let firstChunkSeen = false;
     const streamRenderIntervalMs = this.resolveStreamRenderIntervalMs();
     let statePublishTimer: ReturnType<typeof setTimeout> | null = null;
@@ -145,6 +169,22 @@ export class SendMessagePipeline {
     runStartedAt = this.now();
     this.emitStreamStatus(sendStartedAt, 'connecting');
 
+    const finalizeRunHook = (succeeded: boolean): void => {
+      if (runFinalizeCalled) {
+        return;
+      }
+      runFinalizeCalled = true;
+      try {
+        this.deps.onRunFinalize?.({
+          ...runContext,
+          succeeded,
+        });
+      } catch (error) {
+        const messageText = normalizeErrorMessage(error, 'Run finalize hook failed');
+        this.deps.debug(messageText);
+      }
+    };
+
     const waitingStatusTimer = setTimeout(() => {
       if (!firstChunkSeen && !runCompleted) {
         this.emitStreamStatus(sendStartedAt, 'waiting_first_chunk');
@@ -170,6 +210,7 @@ export class SendMessagePipeline {
             firstChunkSeen = true;
             firstChunkAt = this.now();
           }
+          this.deps.onChunk?.(chunk, runContext);
           this.deps.planApprovalCoordinator.onChunk(chunk);
           this.deps.store.appendToAssistantMessage(chunk, { notify: false });
           this.deps.postMessage({ type: 'streamChunk', chunk });
@@ -185,6 +226,7 @@ export class SendMessagePipeline {
             this.deps.store.endAssistantMessage();
             this.deps.store.setStreaming(false);
           });
+          finalizeRunHook(true);
           this.deps.postMessage({ type: 'streamEnd' });
         },
         (error) => {
@@ -203,6 +245,7 @@ export class SendMessagePipeline {
             this.deps.store.endAssistantMessage();
             this.deps.store.setStreaming(false);
           });
+          finalizeRunHook(false);
           this.deps.postMessage({ type: 'streamError', error: normalizedError });
         },
       );
@@ -214,6 +257,9 @@ export class SendMessagePipeline {
     } finally {
       clearTimeout(waitingStatusTimer);
       clearStatePublishTimer();
+    }
+    if (!runFinalizeCalled) {
+      finalizeRunHook(runSucceeded);
     }
 
     if (!runSucceeded) {

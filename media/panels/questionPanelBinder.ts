@@ -1,14 +1,28 @@
 import type { AppHost } from '../eventBinder';
+import {
+  buildCancelledQuestionAnswerPayload,
+  buildQuestionAnswerPayload,
+  createQuestionPanelState,
+  deriveQuestionPanelState,
+  reduceQuestionPanelState,
+  shouldSubmitAnswers,
+} from '../../src/shared/questionPanelState';
+import { QuestionPanelAction } from '../../src/shared/questionPanelTypes';
+import {
+  focusQuestionNavItem,
+  renderQuestionPanelNav,
+  renderQuestionReviewStage,
+  renderQuestionStage,
+} from './questionPanelView';
+import { beginPanelListenerLifecycle } from './panelListenerLifecycle';
 
-let questionListenersAbortController: AbortController | null = null;
+const questionListeners = { current: null as AbortController | null };
 
 export function attachQuestionListeners(host: AppHost): void {
   const pq = host.getPendingQuestion();
-  if (!pq) return;
-
-  questionListenersAbortController?.abort();
-  const listenersAbortController = new AbortController();
-  questionListenersAbortController = listenersAbortController;
+  if (!pq) {
+    return;
+  }
 
   const panel = document.querySelector('.question-panel') as HTMLElement | null;
   if (!panel) {
@@ -23,15 +37,12 @@ export function attachQuestionListeners(host: AppHost): void {
     return;
   }
 
-  const questionCount = pq.questions.length;
-  const submitNavIndex = questionCount;
-  let activeQuestionIndex = 0;
-  let activeNavIndex = questionCount > 0 ? 0 : submitNavIndex;
-  const activeOptionIndexByQuestion = pq.questions.map(() => 0);
-  const selectedOptionLabelsByQuestion = pq.questions.map(() => new Set<string>());
-  const otherTextByQuestion = pq.questions.map(() => '');
-  let isReviewMode = false;
-  let showSubmitError = false;
+  const listenersAbortController = beginPanelListenerLifecycle(
+    questionListeners,
+    () => !document.body.contains(panel),
+  );
+
+  let state = createQuestionPanelState(pq.questions);
 
   const handleSubmitAnswers = (answers: Record<string, string | string[]>) => {
     host.postMessage({ type: 'questionAnswer', requestId: pq.requestId, answers });
@@ -40,352 +51,71 @@ export function attachQuestionListeners(host: AppHost): void {
   };
 
   const handleCancel = () => {
-    const answers: Record<string, string> = {};
-    for (const q of pq.questions) {
-      answers[q.header] = '';
-    }
-    handleSubmitAnswers(answers);
-  };
-
-  const getSingleSelectedLabel = (questionIdx: number): string => {
-    const selected = selectedOptionLabelsByQuestion[questionIdx];
-    const value = selected.values().next().value;
-    return typeof value === 'string' ? value : '';
-  };
-
-  const getOtherValue = (questionIdx: number): string => otherTextByQuestion[questionIdx].trim();
-
-  const getMultiValues = (questionIdx: number): string[] => {
-    const values = Array.from(selectedOptionLabelsByQuestion[questionIdx]);
-    const otherValue = getOtherValue(questionIdx);
-    if (otherValue) {
-      values.push(otherValue);
-    }
-    return values;
-  };
-
-  const isAnswered = (questionIdx: number): boolean => {
-    if (questionIdx < 0 || questionIdx >= questionCount) {
-      return false;
-    }
-
-    const q = pq.questions[questionIdx];
-    if (q.multiSelect) {
-      return getMultiValues(questionIdx).length > 0;
-    }
-
-    return Boolean(getOtherValue(questionIdx) || getSingleSelectedLabel(questionIdx));
-  };
-
-  const allAnswered = (): boolean => questionCount > 0 && pq.questions.every((_q, qIdx) => isAnswered(qIdx));
-
-  const buildPayload = (): Record<string, string | string[]> => {
-    const answers: Record<string, string | string[]> = {};
-    for (let qIdx = 0; qIdx < questionCount; qIdx += 1) {
-      const q = pq.questions[qIdx];
-      if (q.multiSelect) {
-        answers[q.header] = getMultiValues(qIdx);
-      } else {
-        answers[q.header] = getOtherValue(qIdx) || getSingleSelectedLabel(qIdx) || '';
-      }
-    }
-    return answers;
-  };
-
-  const questionOptionCount = (questionIdx: number): number => {
-    if (questionIdx < 0 || questionIdx >= questionCount) {
-      return 0;
-    }
-    return pq.questions[questionIdx].options.length + 1;
-  };
-
-  const clampActiveOptionIndex = (questionIdx: number): void => {
-    const totalOptions = questionOptionCount(questionIdx);
-    if (totalOptions === 0) {
-      return;
-    }
-    const maxIndex = totalOptions - 1;
-    activeOptionIndexByQuestion[questionIdx] = Math.min(
-      Math.max(activeOptionIndexByQuestion[questionIdx], 0),
-      maxIndex,
-    );
-  };
-
-  const refreshNav = (): void => {
-    const canSubmit = allAnswered();
-    navEl.querySelectorAll('.question-nav-item').forEach((item, idx) => {
-      const navItem = item as HTMLButtonElement;
-      navItem.classList.toggle('active', idx === activeNavIndex);
-      navItem.classList.toggle('answered', idx < questionCount && isAnswered(idx));
-      navItem.classList.toggle('disabled', idx === submitNavIndex && !canSubmit);
-    });
-
-    submitErrorEl.textContent = showSubmitError ? 'Please answer every question before submitting.' : '';
-    submitErrorEl.classList.toggle('visible', showSubmitError);
-  };
-
-  const renderReviewStage = (): void => {
-    reviewEl.innerHTML = '';
-
-    const title = document.createElement('div');
-    title.className = 'question-review-title';
-    title.textContent = 'Review your answers';
-    reviewEl.appendChild(title);
-
-    const list = document.createElement('div');
-    list.className = 'question-review-list';
-
-    for (let qIdx = 0; qIdx < questionCount; qIdx += 1) {
-      const q = pq.questions[qIdx];
-      const row = document.createElement('div');
-      row.className = 'review-row';
-
-      const questionText = document.createElement('div');
-      questionText.className = 'review-question';
-      questionText.textContent = `- ${q.question}`;
-
-      const answerText = document.createElement('div');
-      answerText.className = 'review-answer';
-      if (q.multiSelect) {
-        const values = getMultiValues(qIdx);
-        answerText.textContent = `-> ${values.join(', ') || '(No answer)'}`;
-      } else {
-        answerText.textContent = `-> ${getOtherValue(qIdx) || getSingleSelectedLabel(qIdx) || '(No answer)'}`;
-      }
-
-      row.appendChild(questionText);
-      row.appendChild(answerText);
-      list.appendChild(row);
-    }
-
-    reviewEl.appendChild(list);
-
-    const ready = document.createElement('div');
-    ready.className = 'question-review-ready';
-    ready.textContent = 'Ready to submit your answers?';
-    reviewEl.appendChild(ready);
-  };
-
-  const renderQuestionStage = (): void => {
-    stageEl.innerHTML = '';
-
-    if (questionCount === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'question-empty';
-      empty.textContent = 'No questions to answer. Press Esc to cancel.';
-      stageEl.appendChild(empty);
-      return;
-    }
-
-    const q = pq.questions[activeQuestionIndex];
-    clampActiveOptionIndex(activeQuestionIndex);
-    const focusedOptionIdx = activeOptionIndexByQuestion[activeQuestionIndex];
-
-    const questionText = document.createElement('div');
-    questionText.className = 'question-text';
-    questionText.textContent = q.question;
-    stageEl.appendChild(questionText);
-
-    const subtitle = document.createElement('div');
-    subtitle.className = 'question-subtitle';
-    subtitle.textContent = `Question ${activeQuestionIndex + 1} of ${questionCount}${q.multiSelect ? ' · Select one or more' : ''}`;
-    stageEl.appendChild(subtitle);
-
-    const optionsWrap = document.createElement('div');
-    optionsWrap.className = 'approval-options question-options-list';
-
-    q.options.forEach((opt, optionIdx) => {
-      const optionButton = document.createElement('button');
-      optionButton.className = 'approval-option question-option';
-      optionButton.type = 'button';
-      optionButton.dataset.optionIdx = String(optionIdx);
-
-      if (selectedOptionLabelsByQuestion[activeQuestionIndex].has(opt.label)) {
-        optionButton.classList.add('selected');
-      }
-      if (focusedOptionIdx === optionIdx) {
-        optionButton.classList.add('focused');
-      }
-
-      const key = document.createElement('span');
-      key.className = 'approval-key';
-      key.textContent = String(optionIdx + 1);
-      optionButton.appendChild(key);
-
-      const label = document.createElement('span');
-      label.className = 'approval-label';
-      label.textContent = opt.label;
-      optionButton.appendChild(label);
-
-      if (opt.description) {
-        const description = document.createElement('span');
-        description.className = 'option-description';
-        description.textContent = opt.description;
-        optionButton.appendChild(description);
-      }
-
-      optionsWrap.appendChild(optionButton);
-    });
-
-    const otherIndex = q.options.length;
-    const otherRow = document.createElement('div');
-    otherRow.className = 'approval-option question-option question-other-row';
-    otherRow.dataset.optionIdx = String(otherIndex);
-    if (focusedOptionIdx === otherIndex) {
-      otherRow.classList.add('focused');
-    }
-    if (getOtherValue(activeQuestionIndex)) {
-      otherRow.classList.add('selected');
-    }
-
-    const otherKey = document.createElement('span');
-    otherKey.className = 'approval-key';
-    otherKey.textContent = String(otherIndex + 1);
-    otherRow.appendChild(otherKey);
-
-    const otherInput = document.createElement('input');
-    otherInput.type = 'text';
-    otherInput.className = 'approval-feedback-input question-other-input';
-    otherInput.dataset.questionIdx = String(activeQuestionIndex);
-    otherInput.placeholder = 'Other...';
-    otherInput.value = otherTextByQuestion[activeQuestionIndex];
-    otherRow.appendChild(otherInput);
-
-    optionsWrap.appendChild(otherRow);
-    stageEl.appendChild(optionsWrap);
-  };
-
-  const focusActiveNavItem = (): void => {
-    const navButton = navEl.querySelector(`[data-nav-idx="${activeNavIndex}"]`) as HTMLButtonElement | null;
-    navButton?.focus();
+    handleSubmitAnswers(buildCancelledQuestionAnswerPayload(state.questions));
   };
 
   const renderPanelState = (focusNav = false): void => {
-    refreshNav();
-    if (isReviewMode) {
+    renderQuestionPanelNav(navEl, submitErrorEl, state);
+    if (state.isReviewMode) {
       stageEl.classList.remove('is-visible');
       reviewEl.classList.add('is-visible');
-      renderReviewStage();
+      renderQuestionReviewStage(reviewEl, state);
     } else {
       reviewEl.classList.remove('is-visible');
       stageEl.classList.add('is-visible');
-      renderQuestionStage();
+      renderQuestionStage(stageEl, state);
     }
     if (focusNav) {
-      focusActiveNavItem();
+      focusQuestionNavItem(navEl, state.activeNavIndex);
     }
   };
 
-  const activateSubmit = (focusNav = false): void => {
-    if (!allAnswered()) {
-      showSubmitError = true;
-      isReviewMode = false;
-      renderPanelState(focusNav);
+  const dispatch = (
+    action: QuestionPanelAction,
+    options: { focusNav?: boolean; focusOtherInput?: boolean } = {},
+  ): void => {
+    const previousState = state;
+    state = reduceQuestionPanelState(state, action);
+    if (action.type === 'attemptSubmit' && shouldSubmitAnswers(previousState, state)) {
+      handleSubmitAnswers(buildQuestionAnswerPayload(state));
       return;
     }
 
-    showSubmitError = false;
-    if (!isReviewMode) {
-      isReviewMode = true;
-      renderPanelState(focusNav);
+    renderPanelState(Boolean(options.focusNav));
+    if (!options.focusOtherInput) {
       return;
     }
 
-    handleSubmitAnswers(buildPayload());
+    const input = stageEl.querySelector('.question-other-input') as HTMLInputElement | null;
+    if (input) {
+      input.focus();
+      const len = input.value.length;
+      input.setSelectionRange(len, len);
+    }
   };
 
   const activateOption = (optionIdx: number): void => {
-    if (questionCount === 0) {
-      return;
-    }
-
-    const qIdx = activeQuestionIndex;
-    const q = pq.questions[qIdx];
-    const otherIdx = q.options.length;
-    activeOptionIndexByQuestion[qIdx] = optionIdx;
-    showSubmitError = false;
-
-    if (optionIdx === otherIdx) {
-      renderPanelState();
-      const input = stageEl.querySelector('.question-other-input') as HTMLInputElement | null;
-      if (input) {
-        input.focus();
-        const len = input.value.length;
-        input.setSelectionRange(len, len);
-      }
-      return;
-    }
-
-    const option = q.options[optionIdx];
-    if (!option) {
-      return;
-    }
-
-    if (q.multiSelect) {
-      const selected = selectedOptionLabelsByQuestion[qIdx];
-      if (selected.has(option.label)) {
-        selected.delete(option.label);
-      } else {
-        selected.add(option.label);
-      }
-      renderPanelState();
-      return;
-    }
-
-    selectedOptionLabelsByQuestion[qIdx].clear();
-    selectedOptionLabelsByQuestion[qIdx].add(option.label);
-    otherTextByQuestion[qIdx] = '';
-
-    if (qIdx < questionCount - 1) {
-      activeQuestionIndex = qIdx + 1;
-      activeNavIndex = activeQuestionIndex;
-      isReviewMode = false;
-    } else {
-      activeNavIndex = submitNavIndex;
-      isReviewMode = allAnswered();
-    }
-    renderPanelState(activeNavIndex === submitNavIndex);
+    const derived = deriveQuestionPanelState(state);
+    const question = derived.activeQuestion;
+    const shouldFocusOtherInput = Boolean(question && optionIdx === question.options.length);
+    const shouldFocusSubmitNav = Boolean(
+      question &&
+      !question.multiSelect &&
+      optionIdx < question.options.length &&
+      state.activeQuestionIndex === state.questions.length - 1,
+    );
+    dispatch(
+      { type: 'activateOption', optionIdx },
+      { focusNav: shouldFocusSubmitNav, focusOtherInput: shouldFocusOtherInput },
+    );
   };
 
   const moveNav = (delta: number): void => {
-    const totalNavItems = questionCount + 1;
-    if (totalNavItems <= 0) {
-      return;
-    }
-
-    activeNavIndex = (activeNavIndex + delta + totalNavItems) % totalNavItems;
-    showSubmitError = false;
-
-    if (activeNavIndex < questionCount) {
-      activeQuestionIndex = activeNavIndex;
-      isReviewMode = false;
-      renderPanelState(true);
-      return;
-    }
-
-    if (allAnswered()) {
-      isReviewMode = true;
-    } else {
-      isReviewMode = false;
-      showSubmitError = true;
-    }
-    renderPanelState(true);
+    dispatch({ type: 'moveNav', delta }, { focusNav: true });
   };
 
   const moveActiveOption = (delta: number): void => {
-    if (questionCount === 0 || isReviewMode || activeNavIndex >= questionCount) {
-      return;
-    }
-
-    const totalOptions = questionOptionCount(activeQuestionIndex);
-    if (totalOptions <= 0) {
-      return;
-    }
-
-    activeOptionIndexByQuestion[activeQuestionIndex] =
-      (activeOptionIndexByQuestion[activeQuestionIndex] + delta + totalOptions) % totalOptions;
-    showSubmitError = false;
-    renderPanelState();
+    dispatch({ type: 'moveOption', delta });
   };
 
   panel.addEventListener('click', (e) => {
@@ -401,14 +131,11 @@ export function attachQuestionListeners(host: AppHost): void {
         return;
       }
 
-      activeNavIndex = navIdx;
-      if (navIdx < questionCount) {
-        activeQuestionIndex = navIdx;
-        isReviewMode = false;
-        showSubmitError = false;
-        renderPanelState();
+      if (navIdx < state.questions.length) {
+        dispatch({ type: 'setNavIndex', navIndex: navIdx });
       } else {
-        activateSubmit(true);
+        dispatch({ type: 'setNavIndex', navIndex: navIdx });
+        dispatch({ type: 'attemptSubmit' }, { focusNav: true });
       }
       return;
     }
@@ -428,16 +155,15 @@ export function attachQuestionListeners(host: AppHost): void {
       return;
     }
 
-    const qIdx = Number.parseInt(input.dataset.questionIdx || '', 10);
-    if (Number.isNaN(qIdx) || qIdx < 0 || qIdx >= questionCount) {
+    const questionIdx = Number.parseInt(input.dataset.questionIdx || '', 10);
+    if (Number.isNaN(questionIdx) || !state.questions[questionIdx]) {
       return;
     }
 
-    otherTextByQuestion[qIdx] = input.value;
-    showSubmitError = false;
-    refreshNav();
+    state = reduceQuestionPanelState(state, { type: 'setOtherText', questionIdx, value: input.value });
+    renderQuestionPanelNav(navEl, submitErrorEl, state);
     const otherRow = input.closest('.question-other-row');
-    otherRow?.classList.toggle('selected', getOtherValue(qIdx).length > 0);
+    otherRow?.classList.toggle('selected', input.value.trim().length > 0);
   }, { signal: listenersAbortController.signal });
 
   panel.addEventListener('keydown', (e) => {
@@ -446,47 +172,37 @@ export function attachQuestionListeners(host: AppHost): void {
       return;
     }
 
-    const qIdx = Number.parseInt(input.dataset.questionIdx || '', 10);
-    if (Number.isNaN(qIdx) || qIdx < 0 || qIdx >= questionCount) {
+    const questionIdx = Number.parseInt(input.dataset.questionIdx || '', 10);
+    if (Number.isNaN(questionIdx) || !state.questions[questionIdx]) {
       return;
     }
 
     if (e.key === 'Enter') {
       e.preventDefault();
       e.stopPropagation();
-      const value = input.value.trim();
-      if (!value) {
+      if (!input.value.trim()) {
         return;
       }
 
-      otherTextByQuestion[qIdx] = value;
-      showSubmitError = false;
-      if (!pq.questions[qIdx].multiSelect) {
-        selectedOptionLabelsByQuestion[qIdx].clear();
-        if (qIdx < questionCount - 1) {
-          activeQuestionIndex = qIdx + 1;
-          activeNavIndex = activeQuestionIndex;
-          isReviewMode = false;
-        } else {
-          activeNavIndex = submitNavIndex;
-          isReviewMode = allAnswered();
-        }
-      }
-      renderPanelState(activeNavIndex === submitNavIndex);
+      dispatch({ type: 'setOtherText', questionIdx, value: input.value });
+      const question = state.questions[questionIdx];
+      const shouldFocusSubmitNav = Boolean(
+        question &&
+        !question.multiSelect &&
+        questionIdx === state.questions.length - 1,
+      );
+      dispatch({ type: 'commitOtherInput', questionIdx }, { focusNav: shouldFocusSubmitNav });
       return;
     }
 
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault();
       e.stopPropagation();
-      const totalOptions = questionOptionCount(qIdx);
-      if (totalOptions === 0) {
-        return;
-      }
       const delta = e.key === 'ArrowUp' ? -1 : 1;
-      activeOptionIndexByQuestion[qIdx] = (activeOptionIndexByQuestion[qIdx] + delta + totalOptions) % totalOptions;
-      renderPanelState();
-      if (activeOptionIndexByQuestion[qIdx] === pq.questions[qIdx].options.length) {
+      dispatch({ type: 'moveOptionForQuestion', questionIdx, delta });
+      const question = state.questions[questionIdx];
+      const optionIdx = state.activeOptionIndexByQuestion[questionIdx] ?? 0;
+      if (question && optionIdx === question.options.length) {
         const nextInput = stageEl.querySelector('.question-other-input') as HTMLInputElement | null;
         if (nextInput) {
           nextInput.focus();
@@ -553,40 +269,23 @@ export function attachQuestionListeners(host: AppHost): void {
 
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (activeNavIndex === submitNavIndex) {
-        activateSubmit(true);
+      const submitNavIndex = state.questions.length;
+      if (state.activeNavIndex === submitNavIndex) {
+        dispatch({ type: 'attemptSubmit' }, { focusNav: true });
         return;
       }
 
-      if (isReviewMode) {
-        activeNavIndex = submitNavIndex;
-        activateSubmit(true);
+      if (state.isReviewMode) {
+        dispatch({ type: 'setNavIndex', navIndex: submitNavIndex });
+        dispatch({ type: 'attemptSubmit' }, { focusNav: true });
         return;
       }
 
-      const optionIdx = activeOptionIndexByQuestion[activeQuestionIndex];
+      const optionIdx = state.activeOptionIndexByQuestion[state.activeQuestionIndex] ?? 0;
       activateOption(optionIdx);
     }
   };
   document.addEventListener('keydown', keyHandler, { signal: listenersAbortController.signal });
-
-  const observer = new MutationObserver(() => {
-    if (!document.body.contains(panel)) {
-      listenersAbortController.abort();
-      observer.disconnect();
-      if (questionListenersAbortController === listenersAbortController) {
-        questionListenersAbortController = null;
-      }
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-
-  listenersAbortController.signal.addEventListener('abort', () => {
-    observer.disconnect();
-    if (questionListenersAbortController === listenersAbortController) {
-      questionListenersAbortController = null;
-    }
-  }, { once: true });
 
   renderPanelState();
 }

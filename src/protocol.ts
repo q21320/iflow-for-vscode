@@ -121,6 +121,27 @@ export interface ConversationState {
   isMultiRoot: boolean;
 }
 
+export type RoundFileChangeKind = 'created' | 'modified' | 'deleted';
+export type RoundFileChangeStatus = 'pending' | 'accepted' | 'reverted';
+
+export interface RoundFileChange {
+  path: string;
+  displayPath: string;
+  added: number;
+  removed: number;
+  kind: RoundFileChangeKind;
+  status: RoundFileChangeStatus;
+}
+
+export interface RoundFileChangeSummary {
+  conversationId: string;
+  assistantMessageId: string;
+  changedFiles: RoundFileChange[];
+  totalAdded: number;
+  totalRemoved: number;
+  timestamp: number;
+}
+
 // Messages from webview to extension
 export type WebviewMessage =
   | { type: 'pickFiles' }
@@ -139,6 +160,7 @@ export type WebviewMessage =
   | { type: 'toolApproval'; requestId: number; outcome: 'allow' | 'alwaysAllow' | 'reject' }
   | { type: 'questionAnswer'; requestId: number; answers: Record<string, string | string[]> }
   | { type: 'planApproval'; requestId: number; option: 'smart' | 'default' | 'keep' | 'feedback'; feedback?: string }
+  | { type: 'fileChangeAction'; action: 'openDiff' | 'approve' | 'rollback'; conversationId: string; assistantMessageId: string; path: string }
   | { type: 'cancelCurrent' }
   | { type: 'recheckCli' }
   | { type: 'startAuth' }
@@ -150,6 +172,7 @@ export type ExtensionMessage =
   | { type: 'workspaceFiles'; files: { path: string; name: string }[] }
   | { type: 'fileContents'; files: AttachedFile[] }
   | { type: 'stateUpdated'; state: ConversationState }
+  | { type: 'roundFileChanges'; summary: RoundFileChangeSummary }
   | { type: 'streamStatus'; phase: StreamStatusPhase; elapsedMs: number }
   | { type: 'streamChunk'; chunk: StreamChunk }
   | { type: 'streamEnd' }

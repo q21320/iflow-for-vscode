@@ -1,6 +1,7 @@
 import type { AppHost } from '../eventBinder';
+import { beginPanelListenerLifecycle } from './panelListenerLifecycle';
 
-let approvalListenersAbortController: AbortController | null = null;
+const approvalListeners = { current: null as AbortController | null };
 
 function isApprovalOutcome(value: string | undefined): value is 'allow' | 'alwaysAllow' | 'reject' {
   return value === 'allow' || value === 'alwaysAllow' || value === 'reject';
@@ -10,9 +11,15 @@ export function attachApprovalListeners(host: AppHost): void {
   const conf = host.getPendingConfirmation();
   if (!conf) return;
 
-  approvalListenersAbortController?.abort();
-  const listenersAbortController = new AbortController();
-  approvalListenersAbortController = listenersAbortController;
+  const panel = document.querySelector('.approval-panel');
+  if (!panel) {
+    return;
+  }
+
+  const listenersAbortController = beginPanelListenerLifecycle(
+    approvalListeners,
+    () => !document.body.contains(panel),
+  );
 
   const handleApproval = (outcome: 'allow' | 'alwaysAllow' | 'reject') => {
     host.postMessage({ type: 'toolApproval', requestId: conf.requestId, outcome });
@@ -59,18 +66,4 @@ export function attachApprovalListeners(host: AppHost): void {
     }
   };
   document.addEventListener('keydown', keyHandler, { signal: listenersAbortController.signal });
-
-  const observer = new MutationObserver(() => {
-    if (!document.querySelector('.approval-panel')) {
-      listenersAbortController.abort();
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-
-  listenersAbortController.signal.addEventListener('abort', () => {
-    observer.disconnect();
-    if (approvalListenersAbortController === listenersAbortController) {
-      approvalListenersAbortController = null;
-    }
-  }, { once: true });
 }

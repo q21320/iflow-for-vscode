@@ -12,6 +12,6 @@
 		"strict": true,
 		"moduleResolution": "bundler"
 	},
-	"include": ["media/**/*", "src/protocol.ts"],
+	"include": ["media/**/*", "src/protocol.ts", "src/shared/**/*.ts"],
 	"exclude": ["node_modules"]
 }

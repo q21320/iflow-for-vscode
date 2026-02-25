@@ -407,4 +407,76 @@ suite('SendMessagePipeline', () => {
     const afterWaitCount = messages.filter((m) => m.type === 'stateUpdated').length;
     assert.strictEqual(afterWaitCount, beforeWaitCount);
   });
+
+  test('run hooks are called in start/chunk/finalize order on success', async () => {
+    const store = createStore();
+    const calls: string[] = [];
+    const client = new FakeClient(async (_options, onChunk, onEnd) => {
+      onChunk({ chunkType: 'text', content: 'ok' });
+      onEnd();
+      return 'session-success';
+    });
+
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: client as unknown as import('../acpClient').AcpClient,
+      postMessage: () => {},
+      markCliUnavailable: () => {},
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 50,
+      planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+      onRunStart: () => calls.push('start'),
+      onChunk: () => calls.push('chunk'),
+      onRunFinalize: (context) => calls.push(context.succeeded ? 'finalize:success' : 'finalize:error'),
+    });
+
+    await pipeline.execute({
+      content: 'hook success',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    assert.deepStrictEqual(calls, ['start', 'chunk', 'finalize:success']);
+  });
+
+  test('run finalize hook is called on error', async () => {
+    const store = createStore();
+    const calls: string[] = [];
+    const client = new FakeClient(async (_options, _onChunk, _onEnd, onError) => {
+      onError('fatal');
+      return undefined;
+    });
+
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: client as unknown as import('../acpClient').AcpClient,
+      postMessage: () => {},
+      markCliUnavailable: () => {},
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 50,
+      planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+      onRunStart: () => calls.push('start'),
+      onRunFinalize: (context) => calls.push(context.succeeded ? 'finalize:success' : 'finalize:error'),
+    });
+
+    await pipeline.execute({
+      content: 'hook error',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    assert.deepStrictEqual(calls, ['start', 'finalize:error']);
+  });
 });

@@ -7,6 +7,7 @@ import type {
   Message,
   Conversation,
   IDEContext,
+  RoundFileChangeSummary,
 } from '../src/protocol';
 import { MODELS } from '../src/protocol';
 import { escapeHtml, renderMarkdown } from './markdownRenderer';
@@ -431,6 +432,7 @@ export function renderComposer(opts: {
   pendingConfirmation: PendingConfirmation | null;
   pendingQuestion: PendingQuestion | null;
   pendingPlanApproval: PendingPlanApproval | null;
+  roundFileChanges?: RoundFileChangeSummary;
   ideContextChipsHtml: string;
   attachedFilesHtml: string;
   slashMenuHtml: string;
@@ -458,6 +460,7 @@ export function renderComposer(opts: {
 
   return `
     <div class="composer">
+      ${renderRoundFileChanges(opts.roundFileChanges)}
       ${opts.ideContextChipsHtml}
       ${opts.attachedFilesHtml}
       <div class="composer-input-row">
@@ -515,6 +518,78 @@ export function renderComposer(opts: {
            </div>
         </div>
         ${renderContextUsage(opts.contextUsage)}
+      </div>
+    </div>
+  `;
+}
+
+function renderRoundFileChanges(summary: RoundFileChangeSummary | undefined): string {
+  if (!summary || summary.changedFiles.length === 0) {
+    return '';
+  }
+
+  const fileCount = summary.changedFiles.length;
+  const fileLabel = fileCount === 1 ? 'file' : 'files';
+  const rowsHtml = summary.changedFiles.map((file) => `
+    <div
+      class="round-file-change-row status-${file.status}"
+      role="button"
+      tabindex="0"
+      data-file-change-row="1"
+      data-file-change-path="${escapeAttr(file.path)}"
+      data-file-change-conversation-id="${escapeAttr(summary.conversationId)}"
+      data-file-change-assistant-id="${escapeAttr(summary.assistantMessageId)}"
+      title="${escapeAttr(file.path)}"
+      aria-label="Open diff for ${escapeAttr(file.displayPath)}"
+    >
+      <span class="round-file-change-main">
+        <span class="round-file-change-path">${escapeHtml(file.displayPath)}</span>
+        <span class="round-file-change-kind">${escapeHtml(file.kind)}</span>
+      </span>
+      <span class="round-file-change-stats">
+        <span class="round-file-change-added">+${file.added}</span>
+        <span class="round-file-change-removed">-${file.removed}</span>
+      </span>
+      <span class="round-file-change-actions">
+        <button
+          type="button"
+          class="round-file-change-action approve"
+          data-file-change-action="approve"
+          data-file-change-path="${escapeAttr(file.path)}"
+          data-file-change-conversation-id="${escapeAttr(summary.conversationId)}"
+          data-file-change-assistant-id="${escapeAttr(summary.assistantMessageId)}"
+          aria-label="Approve ${escapeAttr(file.displayPath)}"
+          title="同意"
+        >
+          ✓
+        </button>
+        <button
+          type="button"
+          class="round-file-change-action rollback"
+          data-file-change-action="rollback"
+          data-file-change-path="${escapeAttr(file.path)}"
+          data-file-change-conversation-id="${escapeAttr(summary.conversationId)}"
+          data-file-change-assistant-id="${escapeAttr(summary.assistantMessageId)}"
+          aria-label="Rollback ${escapeAttr(file.displayPath)}"
+          title="撤销"
+        >
+          撤销
+        </button>
+      </span>
+    </div>
+  `).join('');
+
+  return `
+    <div class="round-file-changes-card" aria-label="Round file changes summary">
+      <div class="round-file-changes-header">
+        <span>${fileCount} ${fileLabel} changed</span>
+        <span class="round-file-changes-total">
+          <span class="round-file-change-added">+${summary.totalAdded}</span>
+          <span class="round-file-change-removed">-${summary.totalRemoved}</span>
+        </span>
+      </div>
+      <div class="round-file-changes-list">
+        ${rowsHtml}
       </div>
     </div>
   `;

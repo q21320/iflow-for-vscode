@@ -13,6 +13,7 @@ import { routeWebviewMessage } from './webview/messageRouter';
 import { WorkspaceFileService } from './webview/workspaceFileService';
 import { IDEContextSyncService } from './webview/ideContextSyncService';
 import { AuthCommandHandler } from './webview/authCommandHandler';
+import { FileChangeReviewService } from './webview/fileChangeReviewService';
 import { normalizeErrorMessage } from './errorUtils';
 import {
   DEFAULT_STREAM_RENDER_INTERVAL_MS,
@@ -40,6 +41,10 @@ export interface WebviewHandlerDeps {
   showErrorMessage(message: string): Thenable<string | undefined>;
   createOutputChannel(name: string): vscode.OutputChannel;
   executeCommand<T>(command: string, ...rest: unknown[]): Thenable<T | undefined>;
+  registerTextDocumentContentProvider(
+    scheme: string,
+    provider: vscode.TextDocumentContentProvider,
+  ): vscode.Disposable;
 }
 
 function createDefaultDeps(): WebviewHandlerDeps {
@@ -60,6 +65,8 @@ function createDefaultDeps(): WebviewHandlerDeps {
     showErrorMessage: (message) => vscode.window.showErrorMessage(message),
     createOutputChannel: (name) => vscode.window.createOutputChannel(name),
     executeCommand: (command, ...rest) => vscode.commands.executeCommand(command, ...rest),
+    registerTextDocumentContentProvider: (scheme, provider) =>
+      vscode.workspace.registerTextDocumentContentProvider(scheme, provider),
   };
 }
 
@@ -77,6 +84,7 @@ export class WebviewHandler {
   private readonly sendMessagePipeline: SendMessagePipeline;
   private readonly workspaceFileService: WorkspaceFileService;
   private readonly ideContextSyncService: IDEContextSyncService;
+  private readonly fileChangeReviewService: FileChangeReviewService;
   private readonly extensionUri: vscode.Uri;
   private readonly deps: WebviewHandlerDeps;
   private webview: vscode.Webview | null = null;
@@ -110,6 +118,12 @@ export class WebviewHandler {
       postContextMessage: (context) => this.postMessage({ type: 'ideContextChanged', context }),
       debug: (message) => this.debug(message),
     });
+    this.fileChangeReviewService = new FileChangeReviewService({
+      executeCommand: (command, ...rest) => this.deps.executeCommand(command, ...rest),
+      registerTextDocumentContentProvider: (scheme, provider) =>
+        this.deps.registerTextDocumentContentProvider(scheme, provider),
+      log: (message) => this.debug(message),
+    });
     this.authCommandHandler = new AuthCommandHandler(this.authService, {
       showInformationMessage: (message) => this.deps.showInformationMessage(message),
       showErrorMessage: (message) => this.deps.showErrorMessage(message),
@@ -138,6 +152,16 @@ export class WebviewHandler {
       planApprovalCoordinator: this.planApprovalCoordinator,
       debug: (message) => this.debug(message),
       setSessionId: (sessionId) => this.store.setSessionId(sessionId),
+      onRunStart: (context) => {
+        this.fileChangeReviewService.startRun(context);
+      },
+      onChunk: (chunk) => {
+        this.fileChangeReviewService.onChunk(chunk);
+      },
+      onRunFinalize: (context) => {
+        const summary = this.fileChangeReviewService.finalizeRun(context);
+        this.postMessage({ type: 'roundFileChanges', summary });
+      },
     });
   }
 
@@ -262,6 +286,16 @@ export class WebviewHandler {
           await this.client.approveToolCall(msg.requestId, msg.outcome);
         },
         questionAnswer: async (msg) => this.client.answerQuestions(msg.requestId, msg.answers),
+        fileChangeAction: async (msg) => {
+          try {
+            const summary = await this.fileChangeReviewService.handleAction(msg);
+            this.postMessage({ type: 'roundFileChanges', summary });
+          } catch (error) {
+            const messageText = normalizeErrorMessage(error, 'Failed to handle file change action');
+            this.debug(`fileChangeAction failed (${msg.action}): ${messageText}`);
+            await this.deps.showErrorMessage(messageText);
+          }
+        },
         planApproval: async (msg) => {
           if (msg.requestId === -1) {
             this.planApprovalCoordinator.registerSyntheticApproval(msg.option, msg.feedback);
@@ -361,6 +395,7 @@ export class WebviewHandler {
     }
     this.disposeListeners();
     await this.client.dispose();
+    this.fileChangeReviewService.dispose();
     this.authService.dispose();
     this.debug('WebviewHandler disposed');
     this.outputChannel?.dispose();

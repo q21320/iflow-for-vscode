@@ -55,6 +55,7 @@ interface HandlerTestHarness {
     findFilesImpl: (include: string, exclude: string, maxResults: number) => Promise<Array<{ fsPath: string }>>;
     getWorkspaceFolderImpl: (uri: { fsPath: string }) => WorkspaceFolderLike | undefined;
     executeCommandImpl: (command: string, uri: { fsPath: string }) => Promise<void>;
+    errorMessages: string[];
   };
 }
 
@@ -67,6 +68,7 @@ function createHarness(): HandlerTestHarness {
     findFilesImpl: async () => [],
     getWorkspaceFolderImpl: () => undefined,
     executeCommandImpl: async () => {},
+    errorMessages: [],
   };
 
   const deps: Partial<WebviewHandlerDeps> = {
@@ -90,13 +92,17 @@ function createHarness(): HandlerTestHarness {
     onDidChangeTextEditorSelection: () => noopDisposable,
     showOpenDialog: async () => undefined,
     showInformationMessage: async () => undefined,
-    showErrorMessage: async () => undefined,
+    showErrorMessage: async (message) => {
+      state.errorMessages.push(message);
+      return undefined;
+    },
     createOutputChannel: () => outputChannel,
     executeCommand: async (command, ...rest) => {
       const uri = rest[0] as { fsPath: string };
       await state.executeCommandImpl(command, uri);
       return undefined;
     },
+    registerTextDocumentContentProvider: () => noopDisposable,
   };
 
   const handler = new WebviewHandler(
@@ -235,6 +241,86 @@ suite('WebviewHandler', () => {
       } as unknown as WebviewMessage);
     });
 
+    await handler.dispose();
+  });
+
+  test('fileChangeAction approve updates summary status and posts roundFileChanges', async () => {
+    const { handler } = createHarness();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iflow-wvh-diff-'));
+    const filePath = path.join(tempDir, 'sample.ts');
+    fs.writeFileSync(filePath, 'before\n', 'utf-8');
+
+    const posted: unknown[] = [];
+    (handler as unknown as { postMessage: (message: unknown) => void }).postMessage = (message) => {
+      posted.push(message);
+    };
+
+    try {
+      const reviewService = (handler as unknown as {
+        fileChangeReviewService: {
+          startRun: (context: { conversationId: string; assistantMessageId: string; cwd?: string; allowedDirs: string[] }) => void;
+          onChunk: (chunk: unknown) => void;
+          finalizeRun: (context: { conversationId: string; assistantMessageId: string; succeeded: boolean }) => unknown;
+        };
+      }).fileChangeReviewService;
+
+      reviewService.startRun({
+        conversationId: 'conv-1',
+        assistantMessageId: 'msg-1',
+        cwd: tempDir,
+        allowedDirs: [tempDir],
+      });
+      reviewService.onChunk({
+        chunkType: 'tool_start',
+        name: 'write_file',
+        input: { file_path: filePath },
+      });
+      fs.writeFileSync(filePath, 'after\nline2\n', 'utf-8');
+      reviewService.onChunk({
+        chunkType: 'tool_end',
+        status: 'completed',
+      });
+      reviewService.finalizeRun({
+        conversationId: 'conv-1',
+        assistantMessageId: 'msg-1',
+        succeeded: true,
+      });
+
+      await handler.handleMessage({
+        type: 'fileChangeAction',
+        action: 'approve',
+        conversationId: 'conv-1',
+        assistantMessageId: 'msg-1',
+        path: filePath,
+      });
+
+      const roundSummary = posted.find((entry) => {
+        return Boolean(entry)
+          && typeof entry === 'object'
+          && (entry as { type?: string }).type === 'roundFileChanges';
+      }) as { type: string; summary: { changedFiles: Array<{ status: string }> } } | undefined;
+      assert.ok(roundSummary);
+      assert.strictEqual(roundSummary?.summary.changedFiles[0]?.status, 'accepted');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      await handler.dispose();
+    }
+  });
+
+  test('fileChangeAction failure shows error message and keeps extension alive', async () => {
+    const { handler, state } = createHarness();
+
+    await assert.doesNotReject(async () => {
+      await handler.handleMessage({
+        type: 'fileChangeAction',
+        action: 'rollback',
+        conversationId: 'missing',
+        assistantMessageId: 'missing',
+        path: '/tmp/none.ts',
+      });
+    });
+
+    assert.strictEqual(state.errorMessages.length, 1);
     await handler.dispose();
   });
 });

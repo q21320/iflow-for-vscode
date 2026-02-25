@@ -1,6 +1,7 @@
 import type { AppHost } from '../eventBinder';
+import { beginPanelListenerLifecycle } from './panelListenerLifecycle';
 
-let planApprovalListenersAbortController: AbortController | null = null;
+const planApprovalListeners = { current: null as AbortController | null };
 
 function isPlanOption(value: string | undefined): value is 'smart' | 'default' | 'keep' {
   return value === 'smart' || value === 'default' || value === 'keep';
@@ -10,9 +11,15 @@ export function attachPlanApprovalListeners(host: AppHost): void {
   const pp = host.getPendingPlanApproval();
   if (!pp) return;
 
-  planApprovalListenersAbortController?.abort();
-  const listenersAbortController = new AbortController();
-  planApprovalListenersAbortController = listenersAbortController;
+  const panel = document.querySelector('.plan-approval-panel');
+  if (!panel) {
+    return;
+  }
+
+  const listenersAbortController = beginPanelListenerLifecycle(
+    planApprovalListeners,
+    () => !document.body.contains(panel),
+  );
 
   const handleOption = (option: 'smart' | 'default' | 'keep' | 'feedback', feedback?: string) => {
     host.postMessage({ type: 'planApproval', requestId: pp.requestId, option, feedback });
@@ -52,18 +59,4 @@ export function attachPlanApprovalListeners(host: AppHost): void {
     else if (e.key === 'Escape') { e.preventDefault(); handleOption('keep'); }
   };
   document.addEventListener('keydown', keyHandler, { signal: listenersAbortController.signal });
-
-  const observer = new MutationObserver(() => {
-    if (!document.querySelector('.plan-approval-panel')) {
-      listenersAbortController.abort();
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-
-  listenersAbortController.signal.addEventListener('abort', () => {
-    observer.disconnect();
-    if (planApprovalListenersAbortController === listenersAbortController) {
-      planApprovalListenersAbortController = null;
-    }
-  }, { once: true });
 }

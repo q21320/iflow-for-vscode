@@ -833,6 +833,120 @@ select:focus-visible,
   border-color: var(--vscode-focusBorder);
 }
 
+.round-file-changes-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  overflow: hidden;
+}
+
+.round-file-changes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.round-file-changes-total {
+  display: inline-flex;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.round-file-changes-list {
+  max-height: 200px;
+  overflow: auto;
+}
+
+.round-file-change-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.round-file-change-row:first-child {
+  border-top: none;
+}
+
+.round-file-change-row:hover,
+.round-file-change-row:focus-visible {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+  outline: none;
+}
+
+.round-file-change-main {
+  min-width: 0;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.round-file-change-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vscode-editor-font-family, 'Fira Code', monospace);
+  font-size: 12px;
+}
+
+.round-file-change-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.round-file-change-stats {
+  display: inline-flex;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.round-file-change-actions {
+  display: inline-flex;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.round-file-change-row:hover .round-file-change-actions,
+.round-file-change-row:focus-visible .round-file-change-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.round-file-change-action {
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+}
+
+.round-file-change-action:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.round-file-change-row.status-accepted {
+  border-left: 2px solid var(--vscode-testing-iconPassed, #4caf50);
+}
+
+.round-file-change-row.status-reverted {
+  border-left: 2px solid var(--vscode-errorForeground, #ef5350);
+  opacity: 0.85;
+}
+
 /* ── IDE Context Chips ─────────────────────────────────────────── */
 
 .ide-context-chips {

@@ -7,6 +7,7 @@ import type {
   WebviewMessage,
   ExtensionMessage,
   IDEContext,
+  RoundFileChangeSummary,
 } from '../src/protocol';
 import { formatStreamStatusText, StreamStatusSnapshot } from '../src/streamStatusUtils';
 import { escapeHtml } from './markdownRenderer';
@@ -19,10 +20,7 @@ import {
   renderConversationPanel,
   renderMessages,
   renderComposer,
-  renderBlock,
-  renderPendingIndicator,
   renderIDEContextChips,
-  getModeLabel,
 } from './appRenderer';
 import type { PendingConfirmation, PendingQuestion, PendingPlanApproval } from './panels/panelTypes';
 import {
@@ -32,8 +30,16 @@ import {
   attachContentListeners,
   attachFileOpenListeners,
   attachIDEContextListeners,
+  closePanelsOnOutsideClick,
 } from './eventBinder';
 import type { AppHost } from './eventBinder';
+import { performFullRender } from './renderCoordinator';
+import {
+  updateComposerStatusBarView,
+  updateIDEContextChipsView,
+  updatePendingIndicatorView,
+  updateStreamingContentView,
+} from './streamingViewUpdater';
 
 interface VsCodeApi {
   postMessage(message: WebviewMessage): void;
@@ -60,6 +66,7 @@ class IFlowApp implements AppHost {
   private clearInputOnNextRender = false;
   private ideContext: IDEContext = { activeFile: null, selection: null };
   private ideContextDismissed = { activeFile: false, selection: false };
+  private latestRoundChangesByConversationId = new Map<string, RoundFileChangeSummary>();
 
   // AppHost public state (accessed by event binders)
   showConversationPanel = false;
@@ -104,6 +111,10 @@ class IFlowApp implements AppHost {
       getIDEContextDismissed: () => ({ ...this.ideContextDismissed }),
       setIDEContextDismissed: (dismissed) => {
         this.ideContextDismissed = dismissed;
+      },
+      getLatestRoundChangesByConversationId: () => this.latestRoundChangesByConversationId,
+      setLatestRoundChangesByConversationId: (value) => {
+        this.latestRoundChangesByConversationId = value;
       },
       setPendingConfirmation: (value) => {
         this.pendingConfirmation = value;
@@ -265,26 +276,7 @@ class IFlowApp implements AppHost {
   /** Single document-level click handler (registered once, not per-render). */
   private setupDocumentClickHandler(): void {
     document.addEventListener('click', (e) => {
-      // Close conversation panel on outside click
-      if (this.showConversationPanel) {
-        const panel = document.getElementById('conversation-panel');
-        const trigger = document.getElementById('conversation-trigger');
-        if (panel && trigger && !panel.contains(e.target as Node) && !trigger.contains(e.target as Node)) {
-          this.showConversationPanel = false;
-          panel.classList.add('hidden');
-          trigger.setAttribute('aria-expanded', 'false');
-        }
-      }
-      // Close mode popup on outside click
-      if (this.showModeMenu) {
-        const popup = document.getElementById('mode-popup');
-        const trigger = document.getElementById('mode-trigger');
-        if (popup && trigger && !popup.contains(e.target as Node) && !trigger.contains(e.target as Node)) {
-          this.showModeMenu = false;
-          popup.classList.add('hidden');
-          trigger.setAttribute('aria-expanded', 'false');
-        }
-      }
+      closePanelsOnOutsideClick(this, e.target);
     });
   }
 
@@ -298,19 +290,14 @@ class IFlowApp implements AppHost {
     const app = document.getElementById('app');
     if (!app) return;
 
-    // Save current input state before DOM rebuild
-    const prevInput = document.getElementById('message-input') as HTMLTextAreaElement;
-    const savedValue = this.clearInputOnNextRender ? '' : (prevInput?.value ?? '');
-    const savedSelStart = prevInput?.selectionStart ?? 0;
-    const savedSelEnd = prevInput?.selectionEnd ?? 0;
+    const clearInput = this.clearInputOnNextRender;
     this.clearInputOnNextRender = false;
 
-    // Hide during DOM rebuild to prevent visible scroll-from-top flash
-    app.style.visibility = 'hidden';
-
     const conversation = this.getCurrentConversation();
+    const roundFileChanges = conversation
+      ? this.latestRoundChangesByConversationId.get(conversation.id)
+      : undefined;
     const title = conversation ? escapeHtml(conversation.title) : 'No conversations';
-
     const conversationPanelHtml = renderConversationPanel({
       conversations: this.state?.conversations || [],
       search: this.conversationSearch,
@@ -318,7 +305,7 @@ class IFlowApp implements AppHost {
       currentConversationId: this.state?.currentConversationId ?? null
     });
 
-    app.innerHTML = `
+    const html = `
       <div class="container">
         ${renderTopBar(title, conversationPanelHtml, this.showConversationPanel)}
         ${renderMessages(
@@ -340,39 +327,35 @@ class IFlowApp implements AppHost {
           contextUsage: this.state?.contextUsage,
           showModeMenu: this.showModeMenu,
           workspaceFolderName: this.getWorkspaceFolderName(conversation),
-          isMultiRoot: this.state?.isMultiRoot ?? false
+          isMultiRoot: this.state?.isMultiRoot ?? false,
+          roundFileChanges,
         })}
       </div>
     `;
 
-    // Attach event listeners
-    attachTopBarListeners(this);
-    attachModeListeners(this);
-    attachComposerListeners(this);
-    attachContentListeners();
-    this.slashMenu.attachListeners();
-    this.inputCtrl.attachMentionListeners();
-    this.inputCtrl.attachFileRemoveListeners();
-    attachFileOpenListeners((msg) => this.vscode.postMessage(msg));
-    attachIDEContextListeners(this);
-    this.setupComposerLayoutObserver();
-
-    // Restore input state after DOM rebuild
-    if (savedValue) {
-      const newInput = document.getElementById('message-input') as HTMLTextAreaElement;
-      if (newInput) {
-        newInput.value = savedValue;
-        newInput.selectionStart = savedSelStart;
-        newInput.selectionEnd = savedSelEnd;
-        this.autoResizeTextarea(newInput);
-      }
-    }
-
-    this.scrollToBottom(smoothScrollToBottom);
-
-    // Restore visibility after scroll position is set
-    requestAnimationFrame(() => {
-      app.style.visibility = 'visible';
+    performFullRender({
+      app,
+      clearInputOnNextRender: clearInput,
+      html,
+      bindListeners: () => {
+        attachTopBarListeners(this);
+        attachModeListeners(this);
+        attachComposerListeners(this);
+        attachContentListeners();
+        this.slashMenu.attachListeners();
+        this.inputCtrl.attachMentionListeners();
+        this.inputCtrl.attachFileRemoveListeners();
+        attachFileOpenListeners((msg) => this.vscode.postMessage(msg));
+        attachIDEContextListeners(this);
+        this.setupComposerLayoutObserver();
+      },
+      onRestoreInput: (input) => {
+        this.autoResizeTextarea(input);
+      },
+      onScrollToBottom: (smooth) => {
+        this.scrollToBottom(smooth);
+      },
+      smoothScrollToBottom,
     });
   }
 
@@ -381,63 +364,27 @@ class IFlowApp implements AppHost {
    * and the pending indicator, avoiding a full DOM rebuild.
    */
   private updateStreamingContent(): void {
-    const conversation = this.getCurrentConversation();
-    if (!conversation) {
-      this.render();
-      return;
-    }
-
-    const container = document.getElementById('messages-container');
-    if (!container) {
-      this.render();
-      return;
-    }
-
-    const messages = conversation.messages;
-    const lastMsg = messages[messages.length - 1];
-    if (!lastMsg || lastMsg.role !== 'assistant') {
-      this.render();
-      return;
-    }
-
-    // Update the last assistant message content
-    const msgElements = container.querySelectorAll('.message');
-    const lastMsgEl = msgElements[msgElements.length - 1];
-    if (!lastMsgEl || !lastMsgEl.classList.contains('assistant')) {
-      this.render();
-      return;
-    }
-
-    const contentEl = lastMsgEl.querySelector('.message-content');
-    if (contentEl) {
-      contentEl.innerHTML = lastMsg.blocks.map(b => renderBlock(b)).join('');
-    }
-
-    // Update pending indicator
-    this.updatePendingIndicator(container);
-
-    // Incrementally update composer status bar (mode label, thinking chip, model)
-    this.updateComposerStatusBar();
-
-    this.scrollToBottom();
+    updateStreamingContentView({
+      conversation: this.getCurrentConversation(),
+      fallbackRender: () => this.render(),
+      updatePendingIndicator: (container) => this.updatePendingIndicator(container),
+      updateComposerStatusBar: () => this.updateComposerStatusBar(),
+      scrollToBottom: () => this.scrollToBottom(),
+    });
   }
 
   /**
    * Incrementally update IDE context chips without a full DOM rebuild.
    */
   private updateIDEContextChips(): void {
-    const existing = document.getElementById('ide-context-chips');
-    const newHtml = renderIDEContextChips(this.ideContext, this.ideContextDismissed);
-    if (existing) {
-      existing.outerHTML = newHtml;
-    } else if (newHtml) {
-      const composer = document.querySelector('.composer');
-      if (composer) {
-        composer.insertAdjacentHTML('afterbegin', newHtml);
-      }
-    }
-    attachIDEContextListeners(this);
-    this.syncMessagesBottomInset();
+    updateIDEContextChipsView({
+      ideContext: this.ideContext,
+      ideContextDismissed: this.ideContextDismissed,
+      onAfterPatch: () => {
+        attachIDEContextListeners(this);
+        this.syncMessagesBottomInset();
+      },
+    });
   }
 
   /**
@@ -446,76 +393,20 @@ class IFlowApp implements AppHost {
    * Existing event listeners remain intact since we only mutate text/attributes.
    */
   private updateComposerStatusBar(): void {
-    const conversation = this.getCurrentConversation();
-    const mode = conversation?.mode || 'default';
-    const isThinking = conversation?.think ?? false;
-    const currentModel = conversation?.model ?? 'GLM-4.7';
-
-    // 1. Update mode trigger label
-    const modeTrigger = document.getElementById('mode-trigger');
-    if (modeTrigger) {
-      const labelSpan = modeTrigger.querySelector('span:first-child');
-      if (labelSpan) {
-        labelSpan.textContent = getModeLabel(mode);
-      }
-      modeTrigger.setAttribute('aria-expanded', this.showModeMenu ? 'true' : 'false');
-    }
-
-    // 2. Update mode popup active states
-    document.querySelectorAll('.mode-option[data-mode]').forEach(el => {
-      const optionMode = (el as HTMLElement).dataset.mode;
-      el.classList.toggle('active', optionMode === mode);
-      el.setAttribute('aria-selected', optionMode === mode ? 'true' : 'false');
+    updateComposerStatusBarView({
+      conversation: this.getCurrentConversation(),
+      showModeMenu: this.showModeMenu,
+      autoSizeSelect: (select) => this.autoSizeSelect(select),
     });
-
-    // 3. Update thinking toggle switch
-    const toggleSwitch = document.querySelector('#think-option .toggle-switch');
-    if (toggleSwitch) {
-      toggleSwitch.classList.toggle('active', isThinking);
-    }
-    const thinkOption = document.getElementById('think-option');
-    if (thinkOption) {
-      thinkOption.setAttribute('aria-pressed', isThinking ? 'true' : 'false');
-    }
-
-    // 4. Update thinking chip (add/remove)
-    const statusLeft = document.querySelector('.status-left');
-    const existingChip = document.querySelector('.thinking-chip');
-    if (isThinking && !existingChip && statusLeft) {
-      const modelItem = document.getElementById('model-select')?.closest('.status-item');
-      if (modelItem) {
-        modelItem.insertAdjacentHTML('beforebegin', '<span class="thinking-chip">🧠 Thinking</span>');
-      }
-    } else if (!isThinking && existingChip) {
-      existingChip.remove();
-    }
-
-    // 5. Update model select value
-    const modelSelect = document.getElementById('model-select') as HTMLSelectElement | null;
-    if (modelSelect && modelSelect.value !== currentModel) {
-      modelSelect.value = currentModel;
-      this.autoSizeSelect(modelSelect);
-    }
   }
 
   private updatePendingIndicator(container?: Element): void {
-    const target = container ?? document.getElementById('messages-container');
-    if (!target) {
-      return;
-    }
-
-    const existingIndicator = target.querySelector('.pending-indicator');
-    if (this.state?.isStreaming) {
-      const indicatorHtml = renderPendingIndicator(this.faviconUri, this.getPendingIndicatorText());
-      if (existingIndicator) {
-        (existingIndicator as HTMLElement).outerHTML = indicatorHtml;
-      } else {
-        target.insertAdjacentHTML('beforeend', indicatorHtml);
-      }
-      return;
-    }
-
-    existingIndicator?.remove();
+    updatePendingIndicatorView({
+      container,
+      isStreaming: this.state?.isStreaming ?? false,
+      faviconUri: this.faviconUri,
+      pendingStatusText: this.getPendingIndicatorText(),
+    });
   }
 
   private getPendingIndicatorText(): string {

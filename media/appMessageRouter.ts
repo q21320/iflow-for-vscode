@@ -1,4 +1,4 @@
-import type { ConversationState, ExtensionMessage, IDEContext } from '../src/protocol';
+import type { ConversationState, ExtensionMessage, IDEContext, RoundFileChangeSummary } from '../src/protocol';
 import { reduceStreamStatus, StreamStatusSnapshot } from '../src/streamStatusUtils';
 import type { InputController } from './inputController';
 import type { PendingConfirmation, PendingPlanApproval, PendingQuestion } from './panels/panelTypes';
@@ -14,6 +14,8 @@ interface AppMessageRouterDeps {
   setIDEContext: (context: IDEContext) => void;
   getIDEContextDismissed: () => IDEContextDismissed;
   setIDEContextDismissed: (dismissed: IDEContextDismissed) => void;
+  getLatestRoundChangesByConversationId: () => Map<string, RoundFileChangeSummary>;
+  setLatestRoundChangesByConversationId: (value: Map<string, RoundFileChangeSummary>) => void;
   setPendingConfirmation: (value: PendingConfirmation | null) => void;
   setPendingQuestion: (value: PendingQuestion | null) => void;
   setPendingPlanApproval: (value: PendingPlanApproval | null) => void;
@@ -29,6 +31,7 @@ export class AppMessageRouter {
 
   handle(message: ExtensionMessage): void {
     switch (message.type) {
+      // Full state snapshots from extension host.
       case 'stateUpdated': {
         const previousState = this.deps.getState();
         const previousConversationId = previousState?.currentConversationId ?? null;
@@ -48,6 +51,7 @@ export class AppMessageRouter {
         break;
       }
 
+      // Workspace/file helper responses for @mention and file chips.
       case 'pickedFiles':
         this.deps.inputCtrl.handlePickedFiles(message.files);
         break;
@@ -60,6 +64,19 @@ export class AppMessageRouter {
         this.deps.inputCtrl.handleFileContents(message.files);
         break;
 
+      case 'roundFileChanges': {
+        const next = new Map(this.deps.getLatestRoundChangesByConversationId());
+        if (message.summary.changedFiles.length === 0) {
+          next.delete(message.summary.conversationId);
+        } else {
+          next.set(message.summary.conversationId, message.summary);
+        }
+        this.deps.setLatestRoundChangesByConversationId(next);
+        this.deps.render();
+        break;
+      }
+
+      // Streaming chunks may carry interactive panel requests.
       case 'streamChunk':
         this.deps.setStreamStatus(reduceStreamStatus(this.deps.getStreamStatus(), { type: 'streamChunk' }));
         if (message.chunk.chunkType === 'tool_confirmation') {
@@ -84,6 +101,7 @@ export class AppMessageRouter {
         }
         break;
 
+      // Lightweight status updates for pending indicator copy.
       case 'streamStatus':
         this.deps.setStreamStatus(reduceStreamStatus(this.deps.getStreamStatus(), message));
         if (this.deps.getState()?.isStreaming) {
@@ -91,6 +109,7 @@ export class AppMessageRouter {
         }
         break;
 
+      // Terminal stream events clear any pending panel state.
       case 'streamEnd':
       case 'streamError':
         this.deps.setPendingConfirmation(null);
@@ -99,6 +118,7 @@ export class AppMessageRouter {
         this.deps.setStreamStatus(reduceStreamStatus(this.deps.getStreamStatus(), { type: message.type }));
         break;
 
+      // IDE context chip updates are patched incrementally.
       case 'ideContextChanged': {
         const previous = this.deps.getIDEContext();
         const next = message.context;
