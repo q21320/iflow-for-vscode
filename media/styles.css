@@ -37,6 +37,16 @@ body {
   background-color: var(--bg-app);
 }
 
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible,
+[role="option"]:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #4f9cff);
+  outline-offset: 1px;
+}
+
 .container {
   display: flex;
   flex-direction: column;
@@ -558,7 +568,7 @@ body {
 
 .diff-line {
   display: grid;
-  grid-template-columns: 52px 16px 1fr;
+  grid-template-columns: 52px 64px 16px 1fr;
   align-items: start;
 }
 
@@ -573,6 +583,16 @@ body {
 .diff-sign {
   text-align: center;
   opacity: 0.8;
+  user-select: none;
+}
+
+.diff-kind-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  opacity: 0.9;
+  padding-right: 6px;
   user-select: none;
 }
 

@@ -1,9 +1,10 @@
 import * as assert from 'assert';
-import { WebviewHandler } from '../webviewHandler';
-import * as vscode from 'vscode';
+import { WebviewHandler, type WebviewHandlerDeps } from '../webviewHandler';
+import type { WebviewMessage } from '../protocol';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as vscode from 'vscode';
 
 class FakeMemento {
   private value: unknown;
@@ -45,13 +46,72 @@ class FakeSecrets {
   }
 }
 
+type WorkspaceFolderLike = { uri: { fsPath: string }; name: string };
+
+interface HandlerTestHarness {
+  handler: WebviewHandler;
+  state: {
+    workspaceFolders: WorkspaceFolderLike[] | undefined;
+    findFilesImpl: (include: string, exclude: string, maxResults: number) => Promise<Array<{ fsPath: string }>>;
+    getWorkspaceFolderImpl: (uri: { fsPath: string }) => WorkspaceFolderLike | undefined;
+    executeCommandImpl: (command: string, uri: { fsPath: string }) => Promise<void>;
+  };
+}
+
+function createHarness(): HandlerTestHarness {
+  const noopDisposable = { dispose() {} } as vscode.Disposable;
+  const outputChannel = { appendLine() {}, dispose() {} } as unknown as vscode.OutputChannel;
+
+  const state: HandlerTestHarness['state'] = {
+    workspaceFolders: [],
+    findFilesImpl: async () => [],
+    getWorkspaceFolderImpl: () => undefined,
+    executeCommandImpl: async () => {},
+  };
+
+  const deps: Partial<WebviewHandlerDeps> = {
+    getConfig: <T>(_key: string, defaultValue: T): T => defaultValue,
+    getWorkspaceFolders: () =>
+      state.workspaceFolders as unknown as readonly vscode.WorkspaceFolder[] | undefined,
+    onDidChangeConfiguration: () => noopDisposable,
+    onDidChangeWorkspaceFolders: () => noopDisposable,
+    findFiles: async (include, exclude, maxResults) => {
+      const result = await state.findFilesImpl(
+        String(include),
+        String(exclude ?? ''),
+        maxResults ?? 0,
+      );
+      return result as unknown as vscode.Uri[];
+    },
+    getWorkspaceFolder: (uri) =>
+      state.getWorkspaceFolderImpl(uri as unknown as { fsPath: string }) as unknown as vscode.WorkspaceFolder | undefined,
+    getActiveTextEditor: () => undefined,
+    onDidChangeActiveTextEditor: () => noopDisposable,
+    onDidChangeTextEditorSelection: () => noopDisposable,
+    showOpenDialog: async () => undefined,
+    showInformationMessage: async () => undefined,
+    showErrorMessage: async () => undefined,
+    createOutputChannel: () => outputChannel,
+    executeCommand: async (command, ...rest) => {
+      const uri = rest[0] as { fsPath: string };
+      await state.executeCommandImpl(command, uri);
+      return undefined;
+    },
+  };
+
+  const handler = new WebviewHandler(
+    { fsPath: '/tmp/ext' } as unknown as vscode.Uri,
+    new FakeMemento({ currentId: null, conversations: [] }) as unknown as vscode.Memento,
+    new FakeSecrets() as unknown as vscode.SecretStorage,
+    deps,
+  );
+
+  return { handler, state };
+}
+
 suite('WebviewHandler', () => {
   test('synthetic plan approval updates mode immediately', async () => {
-    const handler = new WebviewHandler(
-      { fsPath: '/tmp/ext' } as unknown as import('vscode').Uri,
-      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
-      new FakeSecrets() as unknown as import('vscode').SecretStorage,
-    );
+    const { handler } = createHarness();
 
     await handler.handleMessage({ type: 'planApproval', requestId: -1, option: 'smart' });
 
@@ -62,204 +122,119 @@ suite('WebviewHandler', () => {
   });
 
   test('getWorkspaceFileList passes limit to vscode.findFiles', async () => {
-    const handler = new WebviewHandler(
-      { fsPath: '/tmp/ext' } as unknown as import('vscode').Uri,
-      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
-      new FakeSecrets() as unknown as import('vscode').SecretStorage,
-    );
+    const { handler, state } = createHarness();
+    let capturedLimit = -1;
 
-    const workspace = vscode.workspace as unknown as {
-      workspaceFolders: Array<{ uri: { fsPath: string }; name: string }> | undefined;
-      findFiles: (include: string, exclude: string, maxResults: number) => Promise<Array<{ fsPath: string }>>;
-      getWorkspaceFolder: (uri: { fsPath: string }) => { uri: { fsPath: string }; name: string } | undefined;
+    state.workspaceFolders = [{ uri: { fsPath: '/root' }, name: 'root' }];
+    state.findFilesImpl = async (_include, _exclude, maxResults) => {
+      capturedLimit = maxResults;
+      return [{ fsPath: '/root/src/a.ts' }, { fsPath: '/root/src/b.ts' }];
     };
+    state.getWorkspaceFolderImpl = () => state.workspaceFolders?.[0];
 
-    const originalWorkspaceFolders = workspace.workspaceFolders;
-    const originalFindFiles = workspace.findFiles;
-    const originalGetWorkspaceFolder = workspace.getWorkspaceFolder;
+    const files = await (handler as unknown as {
+      workspaceFileService: { getWorkspaceFileList: (cwd?: string, limit?: number) => Promise<string[]> };
+    }).workspaceFileService.getWorkspaceFileList('/root', 12);
 
-    try {
-      let capturedLimit = -1;
-      workspace.workspaceFolders = [{ uri: { fsPath: '/root' }, name: 'root' }];
-      workspace.findFiles = async (_include, _exclude, maxResults) => {
-        capturedLimit = maxResults;
-        return [{ fsPath: '/root/src/a.ts' }, { fsPath: '/root/src/b.ts' }];
-      };
-      workspace.getWorkspaceFolder = () => workspace.workspaceFolders?.[0];
-
-      const files = await (handler as unknown as {
-        getWorkspaceFileList: (cwd?: string, limit?: number) => Promise<string[]>;
-      }).getWorkspaceFileList('/root', 12);
-
-      assert.strictEqual(capturedLimit, 12);
-      assert.deepStrictEqual(files, ['src/a.ts', 'src/b.ts']);
-    } finally {
-      workspace.workspaceFolders = originalWorkspaceFolders;
-      workspace.findFiles = originalFindFiles;
-      workspace.getWorkspaceFolder = originalGetWorkspaceFolder;
-      await handler.dispose();
-    }
+    assert.strictEqual(capturedLimit, 12);
+    assert.deepStrictEqual(files, ['src/a.ts', 'src/b.ts']);
+    await handler.dispose();
   });
 
   test('getWorkspaceFileList keeps multi-root prefix behavior', async () => {
-    const handler = new WebviewHandler(
-      { fsPath: '/tmp/ext' } as unknown as import('vscode').Uri,
-      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
-      new FakeSecrets() as unknown as import('vscode').SecretStorage,
-    );
+    const { handler, state } = createHarness();
 
-    const workspace = vscode.workspace as unknown as {
-      workspaceFolders: Array<{ uri: { fsPath: string }; name: string }> | undefined;
-      findFiles: (include: string, exclude: string, maxResults: number) => Promise<Array<{ fsPath: string }>>;
-      getWorkspaceFolder: (uri: { fsPath: string }) => { uri: { fsPath: string }; name: string } | undefined;
+    state.workspaceFolders = [
+      { uri: { fsPath: '/root-a' }, name: 'A' },
+      { uri: { fsPath: '/root-b' }, name: 'B' },
+    ];
+    state.findFilesImpl = async () => [
+      { fsPath: '/root-a/src/in-a.ts' },
+      { fsPath: '/root-b/src/in-b.ts' },
+    ];
+    state.getWorkspaceFolderImpl = (uri) => {
+      if (uri.fsPath.startsWith('/root-a/')) {
+        return state.workspaceFolders?.[0];
+      }
+      if (uri.fsPath.startsWith('/root-b/')) {
+        return state.workspaceFolders?.[1];
+      }
+      return undefined;
     };
 
-    const originalWorkspaceFolders = workspace.workspaceFolders;
-    const originalFindFiles = workspace.findFiles;
-    const originalGetWorkspaceFolder = workspace.getWorkspaceFolder;
+    const files = await (handler as unknown as {
+      workspaceFileService: { getWorkspaceFileList: (cwd?: string, limit?: number) => Promise<string[]> };
+    }).workspaceFileService.getWorkspaceFileList('/root-a', 20);
 
-    try {
-      workspace.workspaceFolders = [
-        { uri: { fsPath: '/root-a' }, name: 'A' },
-        { uri: { fsPath: '/root-b' }, name: 'B' },
-      ];
-      workspace.findFiles = async () => [
-        { fsPath: '/root-a/src/in-a.ts' },
-        { fsPath: '/root-b/src/in-b.ts' },
-      ];
-      workspace.getWorkspaceFolder = (uri) => {
-        if (uri.fsPath.startsWith('/root-a/')) {
-          return workspace.workspaceFolders?.[0];
-        }
-        if (uri.fsPath.startsWith('/root-b/')) {
-          return workspace.workspaceFolders?.[1];
-        }
-        return undefined;
-      };
-
-      const files = await (handler as unknown as {
-        getWorkspaceFileList: (cwd?: string, limit?: number) => Promise<string[]>;
-      }).getWorkspaceFileList('/root-a', 20);
-
-      assert.deepStrictEqual(files, ['src/in-a.ts', '[B] src/in-b.ts']);
-    } finally {
-      workspace.workspaceFolders = originalWorkspaceFolders;
-      workspace.findFiles = originalFindFiles;
-      workspace.getWorkspaceFolder = originalGetWorkspaceFolder;
-      await handler.dispose();
-    }
+    assert.deepStrictEqual(files, ['src/in-a.ts', '[B] src/in-b.ts']);
+    await handler.dispose();
   });
 
-  test('handleOpenFile rejects path outside workspace folders', async () => {
-    const handler = new WebviewHandler(
-      { fsPath: '/tmp/ext' } as unknown as import('vscode').Uri,
-      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
-      new FakeSecrets() as unknown as import('vscode').SecretStorage,
-    );
+  test('workspaceFileService.openFile rejects path outside workspace folders', async () => {
+    const { handler, state } = createHarness();
+    state.workspaceFolders = [{ uri: { fsPath: '/tmp' }, name: 'workspace' }];
 
-    const workspace = vscode.workspace as unknown as {
-      workspaceFolders: Array<{ uri: { fsPath: string }; name: string }> | undefined;
-    };
-    const commands = vscode.commands as unknown as {
-      executeCommand: (command: string, uri: { fsPath: string }) => Promise<void>;
+    let opened = false;
+    state.executeCommandImpl = async () => {
+      opened = true;
     };
 
-    const originalWorkspaceFolders = workspace.workspaceFolders;
-    const originalExecuteCommand = commands.executeCommand;
-
-    try {
-      workspace.workspaceFolders = [{ uri: { fsPath: '/tmp' }, name: 'workspace' }];
-      let opened = false;
-      commands.executeCommand = async () => {
-        opened = true;
-      };
-
+    await assert.rejects(async () => {
       await (handler as unknown as {
-        handleOpenFile: (filePath: string) => Promise<void>;
-      }).handleOpenFile('/etc/passwd');
+        workspaceFileService: { openFile: (filePath: string) => Promise<void> };
+      }).workspaceFileService.openFile('/etc/passwd');
+    }, /outside workspace folders/);
 
-      assert.strictEqual(opened, false);
-    } finally {
-      workspace.workspaceFolders = originalWorkspaceFolders;
-      commands.executeCommand = originalExecuteCommand;
-      await handler.dispose();
-    }
+    assert.strictEqual(opened, false);
+    await handler.dispose();
   });
 
-  test('handleReadFiles reads files inside workspace folder', async () => {
-    const handler = new WebviewHandler(
-      { fsPath: '/tmp/ext' } as unknown as import('vscode').Uri,
-      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
-      new FakeSecrets() as unknown as import('vscode').SecretStorage,
-    );
-
-    const workspace = vscode.workspace as unknown as {
-      workspaceFolders: Array<{ uri: { fsPath: string }; name: string }> | undefined;
-    };
-    const originalWorkspaceFolders = workspace.workspaceFolders;
-    const capturedMessages: unknown[] = [];
+  test('workspaceFileService.readFiles reads files inside workspace folder', async () => {
+    const { handler, state } = createHarness();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iflow-wvh-test-'));
     const filePath = path.join(tempDir, 'inside.txt');
     fs.writeFileSync(filePath, 'hello from workspace', 'utf-8');
 
+    state.workspaceFolders = [{ uri: { fsPath: tempDir }, name: 'workspace' }];
+
     try {
-      workspace.workspaceFolders = [{ uri: { fsPath: tempDir }, name: 'workspace' }];
-      (handler as unknown as { postMessage: (msg: unknown) => void }).postMessage = (msg: unknown) => {
-        capturedMessages.push(msg);
-      };
+      const files = await (handler as unknown as {
+        workspaceFileService: { readFiles: (paths: string[]) => Promise<Array<{ path: string; content?: string }>> };
+      }).workspaceFileService.readFiles([filePath]);
 
-      await (handler as unknown as {
-        handleReadFiles: (paths: string[]) => Promise<void>;
-      }).handleReadFiles([filePath]);
-
-      const fileContentsMessage = capturedMessages.find((msg) => {
-        return (msg as { type?: string }).type === 'fileContents';
-      }) as { files: Array<{ path: string; content?: string }> } | undefined;
-
-      assert.ok(fileContentsMessage);
-      assert.strictEqual(fileContentsMessage?.files.length, 1);
-      assert.strictEqual(fileContentsMessage?.files[0].path, filePath);
-      assert.strictEqual(fileContentsMessage?.files[0].content, 'hello from workspace');
+      assert.strictEqual(files.length, 1);
+      assert.strictEqual(files[0].path, filePath);
+      assert.strictEqual(files[0].content, 'hello from workspace');
     } finally {
-      workspace.workspaceFolders = originalWorkspaceFolders;
       fs.rmSync(tempDir, { recursive: true, force: true });
       await handler.dispose();
     }
   });
 
-  test('handleReadFiles rejects files outside workspace folders', async () => {
-    const handler = new WebviewHandler(
-      { fsPath: '/tmp/ext' } as unknown as import('vscode').Uri,
-      new FakeMemento({ currentId: null, conversations: [] }) as unknown as import('vscode').Memento,
-      new FakeSecrets() as unknown as import('vscode').SecretStorage,
-    );
+  test('workspaceFileService.readFiles rejects files outside workspace folders', async () => {
+    const { handler, state } = createHarness();
+    state.workspaceFolders = [{ uri: { fsPath: '/tmp' }, name: 'workspace' }];
 
-    const workspace = vscode.workspace as unknown as {
-      workspaceFolders: Array<{ uri: { fsPath: string }; name: string }> | undefined;
-    };
-    const originalWorkspaceFolders = workspace.workspaceFolders;
-    const capturedMessages: unknown[] = [];
+    const files = await (handler as unknown as {
+      workspaceFileService: { readFiles: (paths: string[]) => Promise<Array<{ content?: string }>> };
+    }).workspaceFileService.readFiles(['/etc/passwd']);
 
-    try {
-      workspace.workspaceFolders = [{ uri: { fsPath: '/tmp' }, name: 'workspace' }];
-      (handler as unknown as { postMessage: (msg: unknown) => void }).postMessage = (msg: unknown) => {
-        capturedMessages.push(msg);
-      };
+    assert.strictEqual(files.length, 1);
+    assert.ok(files[0].content?.startsWith('['));
+    await handler.dispose();
+  });
 
-      await (handler as unknown as {
-        handleReadFiles: (paths: string[]) => Promise<void>;
-      }).handleReadFiles(['/etc/passwd']);
+  test('handleMessage catches unexpected handler errors', async () => {
+    const { handler } = createHarness();
 
-      const fileContentsMessage = capturedMessages.find((msg) => {
-        return (msg as { type?: string }).type === 'fileContents';
-      }) as { files: Array<{ content?: string }> } | undefined;
+    await assert.doesNotReject(async () => {
+      await handler.handleMessage({
+        type: 'sendMessage',
+        content: undefined,
+        attachedFiles: [],
+      } as unknown as WebviewMessage);
+    });
 
-      assert.ok(fileContentsMessage);
-      assert.strictEqual(fileContentsMessage?.files.length, 1);
-      assert.ok(fileContentsMessage?.files[0].content?.startsWith('['));
-    } finally {
-      workspace.workspaceFolders = originalWorkspaceFolders;
-      await handler.dispose();
-    }
+    await handler.dispose();
   });
 });

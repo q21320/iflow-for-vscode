@@ -13,7 +13,15 @@ import { PathPolicy } from './acp/pathPolicy';
 import { RuntimeConfigApplier } from './acp/runtimeConfigApplier';
 import { SessionCoordinator } from './acp/sessionCoordinator';
 import { SettingsRepository } from './acp/settingsRepository';
+import { AcpDebugLogger } from './acp/debugLogger';
+import { InactivityGuard } from './acp/inactivityGuard';
 import { ConnectionSnapshot, RunOptions } from './acp/types';
+import {
+  CLI_VERSION_TIMEOUT_MS,
+  DEFAULT_INTERACTION_TIMEOUT_MS,
+  DEFAULT_SUBAGENT_INACTIVITY_TIMEOUT_MS,
+  SUBAGENT_CANCEL_RECOVERY_TIMEOUT_MS,
+} from './constants/runtime';
 
 interface AcpNotificationEnvelope {
   sessionId?: string;
@@ -22,8 +30,6 @@ interface AcpNotificationEnvelope {
   usage?: unknown;
   tokenUsage?: unknown;
 }
-
-const ACP_DEBUG_LOG_MAX_CHARS = 8000;
 
 /** Read a vscode config value with fallback. */
 function getConfig<T>(key: string, defaultValue: T): T {
@@ -44,9 +50,10 @@ export class AcpClient {
   private readonly runtimeConfigApplier: RuntimeConfigApplier;
   private readonly interactionBridge: InteractionBridge;
   private readonly sessionCoordinator: SessionCoordinator;
-  private outputChannel: vscode.OutputChannel | null = null;
+  private readonly debugLogger: AcpDebugLogger;
 
   constructor() {
+    this.debugLogger = new AcpDebugLogger(getConfig);
     this.chunkMapper = new ChunkMapper((msg) => this.log(msg));
     this.processManager = new ProcessManager(
       (msg) => this.log(msg),
@@ -61,7 +68,7 @@ export class AcpClient {
       (rawPath) => this.pathPolicy.ensureAllowedPath(rawPath),
       (msg) => this.log(msg),
       {
-        interactionTimeoutMs: getConfig<number>('interactionTimeoutMs', 120000),
+        interactionTimeoutMs: getConfig<number>('interactionTimeoutMs', DEFAULT_INTERACTION_TIMEOUT_MS),
       },
     );
 
@@ -193,35 +200,29 @@ export class AcpClient {
         throw new Error('No active ACP protocol/session');
       }
       const debugLogging = getConfig<boolean>('debugLogging', false);
-
-      // ── Inactivity tracking for stuck sub-agents ─────────────────────
-      const inactivityTimeoutMs = getConfig<number>('subagentInactivityTimeoutMs', 90000);
-      const inactivityState = {
-        lastActivityTime: Date.now(),
-        lastInProgressTool: null as { name: string; title: string } | null,
-        triggered: false,
-      };
+      const inactivityTimeoutMs = getConfig<number>(
+        'subagentInactivityTimeoutMs',
+        DEFAULT_SUBAGENT_INACTIVITY_TIMEOUT_MS,
+      );
+      const inactivityGuard = new InactivityGuard(
+        inactivityTimeoutMs,
+        () => {
+          Promise.race([
+            this.cancel(),
+            new Promise<void>((resolve) => setTimeout(resolve, SUBAGENT_CANCEL_RECOVERY_TIMEOUT_MS)),
+          ]).catch(() => {});
+        },
+        (msg) => this.log(msg),
+      );
 
       const registerNotificationHandler = (): void => {
         protocol.onNotification('session/update', (params: unknown) => {
-          inactivityState.lastActivityTime = Date.now();
-
           const envelope = isObject(params) ? params as AcpNotificationEnvelope : {};
           const update = this.mergeEnvelopeUsage(params, envelope);
-
-          // Track the latest in-progress tool for timeout messages
-          if (isObject(update)
-            && update.sessionUpdate === 'tool_call_update'
-            && update.status === 'in_progress'
-            && typeof update.toolName === 'string') {
-            inactivityState.lastInProgressTool = {
-              name: update.toolName,
-              title: typeof update.title === 'string' ? update.title : '',
-            };
-          }
+          inactivityGuard.markActivity(update);
 
           if (debugLogging) {
-            this.logSessionUpdateDebug(params, envelope, update);
+            this.debugLogger.logSessionUpdateDebug(params, envelope, update);
           }
           const chunks = this.chunkMapper.mapUpdateToChunks(update);
           for (const chunk of chunks) {
@@ -231,24 +232,7 @@ export class AcpClient {
       };
 
       registerNotificationHandler();
-
-      const inactivityInterval = inactivityTimeoutMs > 0
-        ? setInterval(() => {
-            if (!this.running || inactivityState.triggered) { return; }
-            if (Date.now() - inactivityState.lastActivityTime >= inactivityTimeoutMs) {
-              inactivityState.triggered = true;
-              this.log(
-                `Inactivity detected (${Math.round(inactivityTimeoutMs / 1000)}s). ` +
-                `Last tool: ${inactivityState.lastInProgressTool?.name ?? 'none'}. Cancelling...`
-              );
-              // Cancel with a safety timeout to avoid cancel itself hanging
-              Promise.race([
-                this.cancel(),
-                new Promise<void>(resolve => setTimeout(resolve, 10000)),
-              ]).catch(() => {});
-            }
-          }, 10000)
-        : null;
+      inactivityGuard.start(() => this.running);
 
       const builtPrompt = this.chunkMapper.buildPrompt({
         prompt: options.prompt,
@@ -267,22 +251,22 @@ export class AcpClient {
           sessionId,
           prompt: [{ type: 'text', text: builtPrompt }],
         });
-        if (inactivityState.triggered) {
+        if (inactivityGuard.didTrigger) {
           needsRecovery = true;
         }
       } catch (promptError) {
-        if (inactivityState.triggered) {
+        if (inactivityGuard.didTrigger) {
           needsRecovery = true;
         } else {
           throw promptError;
         }
       } finally {
-        if (inactivityInterval) { clearInterval(inactivityInterval); }
+        inactivityGuard.stop();
       }
 
       // ── Inactivity recovery: inform main agent ─────────────────────
-      if (needsRecovery && inactivityState.lastInProgressTool) {
-        const stuckTool = inactivityState.lastInProgressTool;
+      if (needsRecovery && inactivityGuard.lastTool) {
+        const stuckTool = inactivityGuard.lastTool;
         const toolDesc = stuckTool.title || stuckTool.name;
         const timeoutMinutes = Math.round(inactivityTimeoutMs / 60000);
 
@@ -335,6 +319,7 @@ export class AcpClient {
     this.interactionBridge.clearPendingInteractions();
     await this.sessionCoordinator.dispose();
     this.pathPolicy.reset();
+    this.debugLogger.dispose();
   }
 
   isRunning(): boolean {
@@ -381,105 +366,7 @@ export class AcpClient {
   // ── Private helpers ─────────────────────────────────────────────────
 
   private log(msg: string): void {
-    if (!this.outputChannel) {
-      this.outputChannel = vscode.window.createOutputChannel('IFlow');
-    }
-    this.outputChannel.appendLine(`[IFlow] ${msg}`);
-
-    if (getConfig<boolean>('debugLogging', false)) {
-      console.log(`[IFlow] ${msg}`);
-    }
-  }
-
-  private logSessionUpdateDebug(
-    params: unknown,
-    envelope: AcpNotificationEnvelope,
-    update: unknown,
-  ): void {
-    const sessionId = typeof envelope.sessionId === 'string' ? envelope.sessionId : 'unknown';
-    this.log(`[ACP] session/update (sessionId=${sessionId}) ${this.summarizeSessionUpdate(update)}`);
-    if (getConfig<boolean>('debugSessionUpdateOnly', false)) {
-      return;
-    }
-    this.log(`[ACP] session/update raw params=${this.stringifyForLog(params)}`);
-    if (update !== params) {
-      this.log(`[ACP] session/update extracted update=${this.stringifyForLog(update)}`);
-    }
-  }
-
-  private summarizeSessionUpdate(update: unknown): string {
-    if (!isObject(update)) {
-      return `non-object update (${typeof update})`;
-    }
-
-    const summaryParts: string[] = [];
-    const sessionUpdate = typeof update.sessionUpdate === 'string' ? update.sessionUpdate : 'unknown';
-    summaryParts.push(`type=${sessionUpdate}`);
-
-    if (typeof update.status === 'string') {
-      summaryParts.push(`status=${update.status}`);
-    }
-    if (typeof update.toolName === 'string') {
-      summaryParts.push(`tool=${update.toolName}`);
-    }
-    if (typeof update.toolCallId === 'string') {
-      summaryParts.push(`toolCallId=${update.toolCallId}`);
-    }
-    if (typeof update.title === 'string' && update.title.length > 0) {
-      summaryParts.push(`title=${this.truncateText(update.title, 120)}`);
-    }
-
-    if (isObject(update.args)) {
-      const argKeys = Object.keys(update.args);
-      summaryParts.push(`argsKeys=${argKeys.length > 0 ? argKeys.join(',') : '(empty)'}`);
-      const filePath = this.extractDebugFilePath(update.args);
-      if (filePath) {
-        summaryParts.push(`path=${this.truncateText(filePath, 200)}`);
-      }
-    }
-
-    if (Array.isArray(update.locations) && update.locations.length > 0) {
-      const first = update.locations[0];
-      if (isObject(first) && typeof first.path === 'string') {
-        summaryParts.push(`locationPath=${this.truncateText(first.path, 200)}`);
-      }
-    }
-
-    return summaryParts.join(', ');
-  }
-
-  private extractDebugFilePath(args: Record<string, unknown>): string | null {
-    const keys = ['file_path', 'path', 'filePath', 'absolute_path', 'file', 'target_file'];
-    for (const key of keys) {
-      const value = args[key];
-      if (typeof value === 'string' && value.length > 0) {
-        return value;
-      }
-    }
-    return null;
-  }
-
-  private stringifyForLog(value: unknown): string {
-    let serialized: string;
-    try {
-      serialized = JSON.stringify(value);
-    } catch {
-      serialized = String(value);
-    }
-
-    if (serialized.length <= ACP_DEBUG_LOG_MAX_CHARS) {
-      return serialized;
-    }
-
-    const truncated = serialized.slice(0, ACP_DEBUG_LOG_MAX_CHARS);
-    return `${truncated}... [truncated ${serialized.length - ACP_DEBUG_LOG_MAX_CHARS} chars]`;
-  }
-
-  private truncateText(value: string, limit: number): string {
-    if (value.length <= limit) {
-      return value;
-    }
-    return `${value.slice(0, limit - 3)}...`;
+    this.debugLogger.log(msg);
   }
 
   private mergeEnvelopeUsage(params: unknown, envelope: AcpNotificationEnvelope): unknown {
@@ -578,7 +465,7 @@ export class AcpClient {
   private async getCliVersion(nodePath: string, iflowScript: string): Promise<string | null> {
     const cp = await import('child_process');
     return new Promise((resolve) => {
-      cp.execFile(nodePath, [iflowScript, '--version'], { timeout: 5000 }, (err, stdout) => {
+      cp.execFile(nodePath, [iflowScript, '--version'], { timeout: CLI_VERSION_TIMEOUT_MS }, (err, stdout) => {
         if (err) {
           this.log(`Version check failed: ${err.message}`);
           resolve(null);

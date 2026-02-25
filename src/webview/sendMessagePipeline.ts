@@ -3,12 +3,14 @@ import { normalizeErrorMessage } from '../errorUtils';
 import { ConversationStore } from '../store';
 import { AttachedFile, Conversation, ExtensionMessage, IDEContext, StreamStatusPhase } from '../protocol';
 import { PlanApprovalCoordinator } from './planApprovalCoordinator';
+import {
+  DEFAULT_STREAM_RENDER_INTERVAL_MS,
+  MIN_STREAM_RENDER_INTERVAL_MS,
+  WAITING_FIRST_CHUNK_STATUS_DELAY_MS,
+} from '../constants/runtime';
 
 const PLAN_EXECUTION_REMINDER = '<system-reminder>\nPlan mode has been deactivated. The user approved the plan. You are now in execution mode. You may now freely use all tools including write_file, edit_file, run_shell_command, and other modification tools. Please proceed with the implementation.\n</system-reminder>';
-const WAITING_FIRST_CHUNK_STATUS_DELAY_MS = 300;
 const CLI_RECHECK_HINT = '未连接到 iFlow CLI，请 Re-check CLI。';
-const DEFAULT_STREAM_RENDER_INTERVAL_MS = 50;
-const MIN_STREAM_RENDER_INTERVAL_MS = 30;
 
 interface QueuedMessage {
   content: string;

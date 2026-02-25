@@ -59,18 +59,26 @@ function getPieSlicePath(cx: number, cy: number, r: number, percent: number, use
 
 // ── Top bar ─────────────────────────────────────────────────────────
 
-export function renderTopBar(title: string, conversationPanelHtml: string): string {
+export function renderTopBar(title: string, conversationPanelHtml: string, showConversationPanel: boolean): string {
   return `
     <div class="top-bar">
       <div class="conversation-selector">
-        <button id="conversation-trigger" class="conversation-trigger" title="Switch conversation">
+        <button
+          id="conversation-trigger"
+          class="conversation-trigger"
+          title="Switch conversation"
+          aria-label="Switch conversation"
+          aria-haspopup="listbox"
+          aria-expanded="${showConversationPanel ? 'true' : 'false'}"
+          aria-controls="conversation-panel"
+        >
           <span>${title}</span>
           <span class="chevron">▼</span>
         </button>
         ${conversationPanelHtml}
       </div>
       <div class="toolbar">
-         <button id="new-conversation-top-btn" class="icon-btn" title="New Chat">
+         <button id="new-conversation-top-btn" class="icon-btn" title="New Chat" aria-label="Start new conversation">
            <span class="icon">+</span>
          </button>
       </div>
@@ -114,16 +122,22 @@ export function renderConversationPanel(opts: {
   if (earlier.length > 0) groups.push({ label: 'Earlier', items: earlier });
 
   return `
-    <div class="conversation-panel ${showPanel ? '' : 'hidden'}" id="conversation-panel">
+    <div class="conversation-panel ${showPanel ? '' : 'hidden'}" id="conversation-panel" role="dialog" aria-label="Conversation list">
       <div class="conversation-panel-search">
-        <input type="text" id="conversation-search" placeholder="Search sessions..." value="${escapeAttr(search)}" />
+        <input type="text" id="conversation-search" placeholder="Search sessions..." value="${escapeAttr(search)}" aria-label="Search conversations" />
       </div>
-      <div class="conversation-panel-list">
+      <div class="conversation-panel-list" role="listbox" aria-label="Conversations">
         ${groups.length === 0 ? '<div class="conversation-panel-empty">No conversations found</div>' : ''}
         ${groups.map(g => `
           <div class="conversation-group-label">${g.label}</div>
           ${g.items.map(c => `
-            <div class="conversation-item ${c.id === currentConversationId ? 'active' : ''}" data-id="${c.id}">
+            <div
+              class="conversation-item ${c.id === currentConversationId ? 'active' : ''}"
+              data-id="${c.id}"
+              role="option"
+              tabindex="0"
+              aria-selected="${c.id === currentConversationId ? 'true' : 'false'}"
+            >
               <div class="conversation-item-info">
                 <div class="conversation-item-title">${escapeHtml(c.title)}</div>
                 <div class="conversation-item-meta">
@@ -131,7 +145,7 @@ export function renderConversationPanel(opts: {
                 </div>
               </div>
               <span class="conversation-item-time">${timeAgo(c.updatedAt, now)}</span>
-              <button class="conversation-item-delete" data-delete-id="${c.id}" title="Delete">&times;</button>
+              <button class="conversation-item-delete" data-delete-id="${c.id}" title="Delete" aria-label="Delete conversation ${escapeAttr(c.title)}">&times;</button>
             </div>
           `).join('')}
         `).join('')}
@@ -144,25 +158,32 @@ export function renderConversationPanel(opts: {
 
 function renderModePopup(mode: ConversationMode, isThinking: boolean, showModeMenu: boolean): string {
   return `
-    <div class="mode-popup ${showModeMenu ? '' : 'hidden'}" id="mode-popup">
-      <div class="mode-option ${mode === 'default' ? 'active' : ''}" data-mode="default">
+    <div class="mode-popup ${showModeMenu ? '' : 'hidden'}" id="mode-popup" role="listbox" aria-label="Conversation mode options">
+      <div class="mode-option ${mode === 'default' ? 'active' : ''}" data-mode="default" role="option" tabindex="0" aria-selected="${mode === 'default' ? 'true' : 'false'}">
         <span class="mode-option-label">Chat</span>
         <span class="mode-option-desc">Normal conversation</span>
       </div>
-      <div class="mode-option ${mode === 'yolo' ? 'active' : ''}" data-mode="yolo">
+      <div class="mode-option ${mode === 'yolo' ? 'active' : ''}" data-mode="yolo" role="option" tabindex="0" aria-selected="${mode === 'yolo' ? 'true' : 'false'}">
         <span class="mode-option-label">YOLO</span>
         <span class="mode-option-desc">Auto-approve actions</span>
       </div>
-      <div class="mode-option ${mode === 'plan' ? 'active' : ''}" data-mode="plan">
+      <div class="mode-option ${mode === 'plan' ? 'active' : ''}" data-mode="plan" role="option" tabindex="0" aria-selected="${mode === 'plan' ? 'true' : 'false'}">
         <span class="mode-option-label">Plan</span>
         <span class="mode-option-desc">Plan before executing</span>
       </div>
-      <div class="mode-option ${mode === 'smart' ? 'active' : ''}" data-mode="smart">
+      <div class="mode-option ${mode === 'smart' ? 'active' : ''}" data-mode="smart" role="option" tabindex="0" aria-selected="${mode === 'smart' ? 'true' : 'false'}">
         <span class="mode-option-label">Smart</span>
         <span class="mode-option-desc">AI-driven edits</span>
       </div>
       <div class="mode-popup-divider"></div>
-      <div class="mode-option think-option" id="think-option">
+      <div
+        class="mode-option think-option"
+        id="think-option"
+        role="button"
+        tabindex="0"
+        aria-label="Toggle thinking mode"
+        aria-pressed="${isThinking ? 'true' : 'false'}"
+      >
         <span class="mode-option-label">🧠 Thinking</span>
         <div class="toggle-switch ${isThinking ? 'active' : ''}">
           <div class="toggle-knob"></div>
@@ -213,7 +234,12 @@ function renderMessage(message: Message): string {
       ${message.attachedFiles.length > 0 ? `
         <div class="attached-files-display">
           ${message.attachedFiles.map(f => `
-            <button class="file-chip small file-open-btn" data-open-file-path="${escapeAttr(f.path)}" title="Open ${escapeAttr(getFileName(f.path))}">
+            <button
+              class="file-chip small file-open-btn"
+              data-open-file-path="${escapeAttr(f.path)}"
+              title="Open ${escapeAttr(getFileName(f.path))}"
+              aria-label="Open file ${escapeAttr(getFileName(f.path))}"
+            >
               <span class="file-icon">${getFileIcon(f.path)}</span>
               <span class="file-name">${escapeHtml(getFileName(f.path))}</span>
             </button>
@@ -376,7 +402,7 @@ export function renderIDEContextChips(
       <div class="ide-context-chip" title="${escapeAttr(context.activeFile.path)}">
         <span class="file-icon">${getFileIcon(context.activeFile.path)}</span>
         <span class="ide-context-label">${escapeHtml(context.activeFile.name)}</span>
-        <button class="ide-context-dismiss" data-dismiss="activeFile" title="Remove">&times;</button>
+        <button class="ide-context-dismiss" data-dismiss="activeFile" title="Remove" aria-label="Dismiss active file context">&times;</button>
       </div>
     `);
   }
@@ -387,7 +413,7 @@ export function renderIDEContextChips(
       <div class="ide-context-chip" title="${escapeAttr(context.selection.text.substring(0, 200))}">
         <span class="file-icon">&#9986;</span>
         <span class="ide-context-label">${escapeHtml(label)}</span>
-        <button class="ide-context-dismiss" data-dismiss="selection" title="Remove">&times;</button>
+        <button class="ide-context-dismiss" data-dismiss="selection" title="Remove" aria-label="Dismiss selection context">&times;</button>
       </div>
     `);
   }
@@ -435,7 +461,7 @@ export function renderComposer(opts: {
       ${opts.ideContextChipsHtml}
       ${opts.attachedFilesHtml}
       <div class="composer-input-row">
-        <button id="attach-btn" class="icon-btn" title="Attach files">
+        <button id="attach-btn" class="icon-btn" title="Attach files" aria-label="Attach files">
           <span class="icon">📎</span>
         </button>
 	        <div class="input-wrapper">
@@ -443,16 +469,17 @@ export function renderComposer(opts: {
             id="message-input"
             placeholder="Message iFlow..."
             rows="1"
+            aria-label="Message input"
           ></textarea>
           ${opts.slashMenuHtml}
           ${opts.mentionMenuHtml}
         </div>
         ${opts.isStreaming ? `
-          <button id="cancel-btn" class="icon-btn danger stop-btn" title="Stop">
+          <button id="cancel-btn" class="icon-btn danger stop-btn" title="Stop" aria-label="Stop response generation">
             <span class="stop-glyph" aria-hidden="true"></span>
           </button>
         ` : `
-          <button id="send-btn" class="icon-btn primary" title="Send">
+          <button id="send-btn" class="icon-btn primary" title="Send" aria-label="Send message">
             <span class="icon">➤</span>
           </button>
         `}
@@ -465,7 +492,14 @@ export function renderComposer(opts: {
              </div>
            ` : ''}
            <div class="status-item mode-selector-wrapper">
-              <button id="mode-trigger" class="mode-trigger">
+              <button
+                id="mode-trigger"
+                class="mode-trigger"
+                aria-label="Choose mode"
+                aria-haspopup="listbox"
+                aria-expanded="${opts.showModeMenu ? 'true' : 'false'}"
+                aria-controls="mode-popup"
+              >
                 <span>${getModeLabel(conversation?.mode || 'default')}</span>
                 <span class="chevron">▾</span>
               </button>
@@ -473,7 +507,7 @@ export function renderComposer(opts: {
            </div>
            ${isThinking ? '<span class="thinking-chip">🧠 Thinking</span>' : ''}
            <div class="status-item">
-             <select id="model-select" class="dropdown-mini" title="Select Model">
+             <select id="model-select" class="dropdown-mini" title="Select Model" aria-label="Select model">
                ${MODELS.map(m => `
                  <option value="${m}" ${currentModel === m ? 'selected' : ''}>${m}</option>
                `).join('')}

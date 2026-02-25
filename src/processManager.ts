@@ -3,11 +3,18 @@
 import * as cp from 'child_process';
 import WebSocket = require('ws');
 import { findIFlowPathCrossPlatform, resolveIFlowScriptCrossPlatform, deriveNodePathFromIFlow } from './cliDiscovery';
+import {
+  PROCESS_FORCE_KILL_TIMEOUT_MS,
+  PROCESS_WS_MAX_ATTEMPTS,
+  PROCESS_WS_RETRY_INTERVAL_MS,
+} from './constants/runtime';
 
 // ── Process lifecycle constants ──────────────────────────────────────
 const PROCESS_STARTUP_TIMEOUT_MS = 30_000;
 const PROCESS_READY_FALLBACK_MS = 2_000;
 const PROCESS_INIT_DELAY_MS = 500;
+const STARTUP_LOG_BUFFER_MAX_LINES = 20;
+const PROCESS_WS_HANDSHAKE_TIMEOUT_MS = 1_000;
 
 export interface ManualStartInfo {
   nodePath: string;
@@ -177,8 +184,6 @@ export class ProcessManager {
       // Buffer to collect output for error reporting
       const stdoutBuffer: string[] = [];
       const stderrBuffer: string[] = [];
-      const maxBufferLines = 20;
-
       this.managedProcess = this.spawnProcess(nodePath, args, {
         cwd: cwd ?? process.cwd(),
         env: { ...process.env },
@@ -195,7 +200,7 @@ export class ProcessManager {
       this.managedProcess.stdout?.on('data', (data: Buffer) => {
         const output = data.toString();
         stdoutBuffer.push(output);
-        if (stdoutBuffer.length > maxBufferLines) {
+        if (stdoutBuffer.length > STARTUP_LOG_BUFFER_MAX_LINES) {
           stdoutBuffer.shift();
         }
         this.log(`[iFlow stdout] ${output}`);
@@ -213,7 +218,7 @@ export class ProcessManager {
       this.managedProcess.stderr?.on('data', (data: Buffer) => {
         const output = data.toString();
         stderrBuffer.push(output);
-        if (stderrBuffer.length > maxBufferLines) {
+        if (stderrBuffer.length > STARTUP_LOG_BUFFER_MAX_LINES) {
           stderrBuffer.shift();
         }
         this.log(`[iFlow stderr] ${output}`);
@@ -256,17 +261,15 @@ export class ProcessManager {
       // If no ready signal, try to connect via WebSocket to confirm server is ready
       let wsTimeout: NodeJS.Timeout | null = null;
       const checkWebSocketReady = async () => {
-        const maxAttempts = 20;
-        const intervalMs = 300;
         const wsUrl = `ws://localhost:${port}/acp`;
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        for (let attempt = 1; attempt <= PROCESS_WS_MAX_ATTEMPTS; attempt++) {
           if (started || !this.managedProcess || this.managedProcess.killed) {
             return;
           }
 
           try {
-            const ws = this.createWebSocket(wsUrl, { handshakeTimeout: 1000 });
+            const ws = this.createWebSocket(wsUrl, { handshakeTimeout: PROCESS_WS_HANDSHAKE_TIMEOUT_MS });
             const connectionResult = await new Promise<{ success: boolean; error?: Error }>((resolveWs) => {
               let isResolved = false;
 
@@ -336,14 +339,14 @@ export class ProcessManager {
           }
 
           // Connection failed, wait and retry
-          if (attempt < maxAttempts && !started) {
-            await new Promise(r => setTimeout(r, intervalMs));
+          if (attempt < PROCESS_WS_MAX_ATTEMPTS && !started) {
+            await new Promise(r => setTimeout(r, PROCESS_WS_RETRY_INTERVAL_MS));
           }
         }
 
         // All attempts failed
         if (!started) {
-          this.log(`[process warning] WebSocket not ready after ${maxAttempts} attempts, proceeding anyway`);
+          this.log(`[process warning] WebSocket not ready after ${PROCESS_WS_MAX_ATTEMPTS} attempts, proceeding anyway`);
           started = true;
           clearTimeout(timeout);
           resolve();
@@ -379,7 +382,7 @@ export class ProcessManager {
         try {
           cp.execSync(
             `taskkill /F /T /PID ${this.managedProcess.pid}`,
-            { windowsHide: true, timeout: 5000, stdio: 'ignore' }
+            { windowsHide: true, timeout: PROCESS_FORCE_KILL_TIMEOUT_MS, stdio: 'ignore' }
           );
         } catch {
           // Process may have already exited

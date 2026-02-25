@@ -8,10 +8,11 @@ import type {
   ExtensionMessage,
   IDEContext,
 } from '../src/protocol';
-import { formatStreamStatusText, reduceStreamStatus, StreamStatusSnapshot } from '../src/streamStatusUtils';
+import { formatStreamStatusText, StreamStatusSnapshot } from '../src/streamStatusUtils';
 import { escapeHtml } from './markdownRenderer';
 import { SlashMenuController } from './slashMenuController';
 import { InputController } from './inputController';
+import { AppMessageRouter } from './appMessageRouter';
 import { TEXTAREA_MIN_HEIGHT, TEXTAREA_MAX_HEIGHT, COMPOSER_MIN_INSET, COMPOSER_INSET_PADDING } from './webviewUtils';
 import {
   renderTopBar,
@@ -49,6 +50,7 @@ class IFlowApp implements AppHost {
   private slashMenu!: SlashMenuController;
   private inputCtrl!: InputController;
   private faviconUri: string;
+  private readonly messageRouter: AppMessageRouter;
 
   private composerResizeObserver: ResizeObserver | null = null;
   private pendingConfirmation: PendingConfirmation | null = null;
@@ -85,6 +87,43 @@ class IFlowApp implements AppHost {
       },
       getWorkspaceFolders: () => this.state?.workspaceFolders ?? [],
       isMultiRoot: () => this.state?.isMultiRoot ?? false
+    });
+    this.messageRouter = new AppMessageRouter({
+      getState: () => this.state,
+      setState: (state) => {
+        this.state = state;
+      },
+      getStreamStatus: () => this.streamStatus,
+      setStreamStatus: (status) => {
+        this.streamStatus = status;
+      },
+      getIDEContext: () => this.ideContext,
+      setIDEContext: (context) => {
+        this.ideContext = context;
+      },
+      getIDEContextDismissed: () => ({ ...this.ideContextDismissed }),
+      setIDEContextDismissed: (dismissed) => {
+        this.ideContextDismissed = dismissed;
+      },
+      setPendingConfirmation: (value) => {
+        this.pendingConfirmation = value;
+      },
+      setPendingQuestion: (value) => {
+        this.pendingQuestion = value;
+      },
+      setPendingPlanApproval: (value) => {
+        this.pendingPlanApproval = value;
+      },
+      inputCtrl: this.inputCtrl,
+      render: (conversationChanged = false) => {
+        if (conversationChanged) {
+          this.clearInputOnNextRender = true;
+        }
+        this.render(conversationChanged);
+      },
+      updateStreamingContent: () => this.updateStreamingContent(),
+      updatePendingIndicator: () => this.updatePendingIndicator(),
+      updateIDEContextChips: () => this.updateIDEContextChips(),
     });
     this.setupMessageHandler();
     this.setupDocumentClickHandler();
@@ -219,8 +258,7 @@ class IFlowApp implements AppHost {
 
   private setupMessageHandler(): void {
     window.addEventListener('message', (event) => {
-      const message = event.data as ExtensionMessage;
-      this.handleMessage(message);
+      this.handleMessage(event.data as ExtensionMessage);
     });
   }
 
@@ -234,6 +272,7 @@ class IFlowApp implements AppHost {
         if (panel && trigger && !panel.contains(e.target as Node) && !trigger.contains(e.target as Node)) {
           this.showConversationPanel = false;
           panel.classList.add('hidden');
+          trigger.setAttribute('aria-expanded', 'false');
         }
       }
       // Close mode popup on outside click
@@ -243,110 +282,14 @@ class IFlowApp implements AppHost {
         if (popup && trigger && !popup.contains(e.target as Node) && !trigger.contains(e.target as Node)) {
           this.showModeMenu = false;
           popup.classList.add('hidden');
+          trigger.setAttribute('aria-expanded', 'false');
         }
       }
     });
   }
 
   private handleMessage(message: ExtensionMessage): void {
-    switch (message.type) {
-      case 'stateUpdated': {
-        const previousConversationId = this.state?.currentConversationId ?? null;
-        const wasStreaming = this.state?.isStreaming ?? false;
-        this.state = message.state;
-        this.streamStatus = reduceStreamStatus(this.streamStatus, {
-          type: 'stateUpdated',
-          isStreaming: this.state.isStreaming,
-        });
-        const conversationChanged = previousConversationId !== (this.state.currentConversationId ?? null);
-        if (this.state.isStreaming && wasStreaming) {
-          // During streaming, only update the last message instead of full DOM rebuild
-          this.updateStreamingContent();
-        } else {
-          // Only smooth-scroll when switching/new conversation.
-          if (conversationChanged) {
-            this.clearInputOnNextRender = true;
-          }
-          this.render(conversationChanged);
-        }
-        break;
-      }
-
-      case 'pickedFiles':
-        this.inputCtrl.handlePickedFiles(message.files);
-        break;
-
-      case 'workspaceFiles':
-        this.inputCtrl.setWorkspaceFiles(message.files);
-        break;
-
-      case 'fileContents':
-        this.inputCtrl.handleFileContents(message.files);
-        break;
-
-      case 'streamChunk':
-        this.streamStatus = reduceStreamStatus(this.streamStatus, { type: 'streamChunk' });
-        // Streaming updates are handled by stateUpdated to avoid duplicate scroll work.
-        // Exception: tool_confirmation needs to transform the composer into an approval UI.
-        if (message.chunk.chunkType === 'tool_confirmation') {
-          this.pendingConfirmation = {
-            requestId: message.chunk.requestId,
-            toolName: message.chunk.toolName,
-            description: message.chunk.description,
-          };
-          this.render();
-        } else if (message.chunk.chunkType === 'user_question') {
-          this.pendingQuestion = {
-            requestId: message.chunk.requestId,
-            questions: message.chunk.questions,
-          };
-          this.render();
-        } else if (message.chunk.chunkType === 'plan_approval') {
-          this.pendingPlanApproval = {
-            requestId: message.chunk.requestId,
-            plan: message.chunk.plan,
-          };
-          this.render();
-        }
-        break;
-
-      case 'streamStatus':
-        this.streamStatus = reduceStreamStatus(this.streamStatus, message);
-        if (this.state?.isStreaming) {
-          this.updatePendingIndicator();
-        }
-        break;
-
-      case 'streamEnd':
-      case 'streamError':
-        // No render() needed here — the stateUpdated with isStreaming=false
-        // already triggers a full render.
-        // Clear any pending states when the stream ends.
-        this.pendingConfirmation = null;
-        this.pendingQuestion = null;
-        this.pendingPlanApproval = null;
-        this.streamStatus = reduceStreamStatus(this.streamStatus, { type: message.type });
-        break;
-
-      case 'ideContextChanged': {
-        const prev = this.ideContext;
-        const next = message.context;
-        // Reset dismiss when the actual context changes
-        if (prev.activeFile?.path !== next.activeFile?.path) {
-          this.ideContextDismissed = { ...this.ideContextDismissed, activeFile: false };
-        }
-        if (prev.selection?.filePath !== next.selection?.filePath ||
-            prev.selection?.lineStart !== next.selection?.lineStart ||
-            prev.selection?.lineEnd !== next.selection?.lineEnd ||
-            prev.selection?.text !== next.selection?.text) {
-          this.ideContextDismissed = { ...this.ideContextDismissed, selection: false };
-        }
-        this.ideContext = next;
-        // Incrementally update IDE context chips without full DOM rebuild
-        this.updateIDEContextChips();
-        break;
-      }
-    }
+    this.messageRouter.handle(message);
   }
 
   // ── Rendering orchestration ────────────────────────────────────────
@@ -377,7 +320,7 @@ class IFlowApp implements AppHost {
 
     app.innerHTML = `
       <div class="container">
-        ${renderTopBar(title, conversationPanelHtml)}
+        ${renderTopBar(title, conversationPanelHtml, this.showConversationPanel)}
         ${renderMessages(
           conversation,
           this.state?.isStreaming ?? false,
@@ -515,18 +458,24 @@ class IFlowApp implements AppHost {
       if (labelSpan) {
         labelSpan.textContent = getModeLabel(mode);
       }
+      modeTrigger.setAttribute('aria-expanded', this.showModeMenu ? 'true' : 'false');
     }
 
     // 2. Update mode popup active states
     document.querySelectorAll('.mode-option[data-mode]').forEach(el => {
       const optionMode = (el as HTMLElement).dataset.mode;
       el.classList.toggle('active', optionMode === mode);
+      el.setAttribute('aria-selected', optionMode === mode ? 'true' : 'false');
     });
 
     // 3. Update thinking toggle switch
     const toggleSwitch = document.querySelector('#think-option .toggle-switch');
     if (toggleSwitch) {
       toggleSwitch.classList.toggle('active', isThinking);
+    }
+    const thinkOption = document.getElementById('think-option');
+    if (thinkOption) {
+      thinkOption.setAttribute('aria-pressed', isThinking ? 'true' : 'false');
     }
 
     // 4. Update thinking chip (add/remove)

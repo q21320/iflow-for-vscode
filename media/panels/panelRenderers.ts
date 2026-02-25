@@ -5,18 +5,18 @@ import type { PendingConfirmation, PendingPlanApproval, PendingQuestion } from '
 export function renderApprovalPanel(conf: PendingConfirmation): string {
   const toolLabel = escapeHtml(conf.toolName);
   return `
-    <div class="composer approval-panel">
+    <div class="composer approval-panel" role="dialog" aria-label="Tool approval">
       <div class="approval-question">Allow <strong>${toolLabel}</strong>?</div>
       <div class="approval-options">
-        <button class="approval-option" data-approval="allow">
+        <button class="approval-option" data-approval="allow" aria-label="Allow this action">
           <span class="approval-key">1</span>
           <span class="approval-label">Yes</span>
         </button>
-        <button class="approval-option" data-approval="alwaysAllow">
+        <button class="approval-option" data-approval="alwaysAllow" aria-label="Allow all edits for this session">
           <span class="approval-key">2</span>
           <span class="approval-label">Yes, allow all edits this session</span>
         </button>
-        <button class="approval-option" data-approval="reject">
+        <button class="approval-option" data-approval="reject" aria-label="Reject this action">
           <span class="approval-key">3</span>
           <span class="approval-label">No</span>
         </button>
@@ -27,6 +27,7 @@ export function renderApprovalPanel(conf: PendingConfirmation): string {
             id="approval-feedback-input"
             class="approval-feedback-input"
             placeholder="Tell IFlow what to do instead..."
+            aria-label="Approval feedback"
           />
         </div>
       </div>
@@ -51,8 +52,8 @@ export function renderQuestionPanel(pq: PendingQuestion): string {
   const submitNavIndex = pq.questions.length;
 
   return `
-    <div class="composer question-panel" data-request-id="${pq.requestId}">
-      <div class="question-nav">
+    <div class="composer question-panel" data-request-id="${pq.requestId}" role="dialog" aria-label="Questionnaire">
+      <div class="question-nav" role="tablist" aria-label="Question navigation">
         ${navHtml}
         <button
           class="question-nav-item question-submit-item"
@@ -76,19 +77,19 @@ export function renderPlanApprovalPanel(pp: PendingPlanApproval): string {
     : '';
 
   return `
-    <div class="composer plan-approval-panel" data-request-id="${pp.requestId}">
+    <div class="composer plan-approval-panel" data-request-id="${pp.requestId}" role="dialog" aria-label="Plan approval">
       <div class="plan-approval-question">Approve this plan?</div>
       ${planContentHtml}
       <div class="approval-options">
-        <button class="approval-option" data-plan-option="smart">
+        <button class="approval-option" data-plan-option="smart" aria-label="Approve plan and use smart mode edits">
           <span class="approval-key">1</span>
           <span class="approval-label">Yes, and use smart mode edits</span>
         </button>
-        <button class="approval-option" data-plan-option="default">
+        <button class="approval-option" data-plan-option="default" aria-label="Approve plan and require manual edit approvals">
           <span class="approval-key">2</span>
           <span class="approval-label">Yes, and manually approve edits</span>
         </button>
-        <button class="approval-option" data-plan-option="keep">
+        <button class="approval-option" data-plan-option="keep" aria-label="Keep planning">
           <span class="approval-key">3</span>
           <span class="approval-label">No, keep planning</span>
         </button>
@@ -98,6 +99,7 @@ export function renderPlanApprovalPanel(pp: PendingPlanApproval): string {
             type="text"
             class="approval-feedback-input plan-feedback-input"
             placeholder="Tell iFlow what to do instead..."
+            aria-label="Plan feedback"
           />
         </div>
       </div>

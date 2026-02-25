@@ -386,6 +386,7 @@ function renderWriteFilePreview(block: ToolBlock): string {
   const lineHtml = visible.map((line, idx) => `
     <div class="diff-line add">
       <span class="diff-line-no">${idx + 1}</span>
+      <span class="diff-kind-label">Added</span>
       <span class="diff-sign">+</span>
       <span class="diff-text">${escapeHtml(line)}</span>
     </div>
@@ -396,7 +397,7 @@ function renderWriteFilePreview(block: ToolBlock): string {
       <div class="edited-file-header">
         <span class="edited-file-title">Written file</span>
         <span class="edited-file-name">${escapeHtml(shortenPath(filePath))}</span>
-        <span class="edited-file-stats"><span class="stat-added">+${lines.length}</span></span>
+        <span class="edited-file-stats"><span class="stat-added">Added ${lines.length}</span></span>
       </div>
       <div class="edited-file-diff-scroll">
         ${lineHtml}
@@ -417,9 +418,17 @@ function renderEditedFilePreview(block: ToolBlock): string {
 
   const lineHtml = diff.lines.map(line => {
     const sign = line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : line.kind === 'meta' ? '@' : ' ';
+    const label = line.kind === 'add'
+      ? 'Added'
+      : line.kind === 'del'
+        ? 'Removed'
+        : line.kind === 'meta'
+          ? 'Meta'
+          : 'Context';
     return `
       <div class="diff-line ${line.kind}">
         <span class="diff-line-no">${line.lineNo ?? ''}</span>
+        <span class="diff-kind-label">${label}</span>
         <span class="diff-sign">${sign}</span>
         <span class="diff-text">${escapeHtml(line.text)}</span>
       </div>
@@ -431,7 +440,7 @@ function renderEditedFilePreview(block: ToolBlock): string {
       <div class="edited-file-header">
         <span class="edited-file-title">Edited file</span>
         <span class="edited-file-name">${escapeHtml(diff.fileName)}</span>
-        <span class="edited-file-stats"><span class="stat-added">+${diff.added}</span> <span class="stat-removed">-${diff.removed}</span></span>
+        <span class="edited-file-stats"><span class="stat-added">Added ${diff.added}</span> <span class="stat-removed">Removed ${diff.removed}</span></span>
       </div>
       <div class="edited-file-diff-scroll">
         ${lineHtml}

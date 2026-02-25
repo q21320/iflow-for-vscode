@@ -50,6 +50,7 @@ export function attachTopBarListeners(host: AppHost): void {
   document.getElementById('conversation-trigger')?.addEventListener('click', (e) => {
     e.stopPropagation();
     host.showConversationPanel = !host.showConversationPanel;
+    (e.currentTarget as HTMLElement | null)?.setAttribute('aria-expanded', host.showConversationPanel ? 'true' : 'false');
     const panel = document.getElementById('conversation-panel');
     if (panel) {
       panel.classList.toggle('hidden', !host.showConversationPanel);
@@ -99,6 +100,7 @@ export function attachModeListeners(host: AppHost): void {
   document.getElementById('mode-trigger')?.addEventListener('click', (e) => {
     e.stopPropagation();
     host.showModeMenu = !host.showModeMenu;
+    (e.currentTarget as HTMLElement | null)?.setAttribute('aria-expanded', host.showModeMenu ? 'true' : 'false');
     const popup = document.getElementById('mode-popup');
     if (popup) {
       popup.classList.toggle('hidden', !host.showModeMenu);
@@ -106,14 +108,37 @@ export function attachModeListeners(host: AppHost): void {
   });
 
   document.querySelectorAll('.mode-option[data-mode]').forEach(item => {
-    item.addEventListener('click', () => {
-      const mode = (item as HTMLElement).dataset.mode as ConversationMode;
+    const modeOption = item as HTMLElement;
+    modeOption.addEventListener('click', () => {
+      const mode = modeOption.dataset.mode as ConversationMode;
       host.showModeMenu = false;
+      document.getElementById('mode-popup')?.classList.add('hidden');
+      document.getElementById('mode-trigger')?.setAttribute('aria-expanded', 'false');
+      host.postMessage({ type: 'setMode', mode });
+    });
+    modeOption.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') {
+        return;
+      }
+      e.preventDefault();
+      const mode = modeOption.dataset.mode as ConversationMode;
+      host.showModeMenu = false;
+      document.getElementById('mode-popup')?.classList.add('hidden');
+      document.getElementById('mode-trigger')?.setAttribute('aria-expanded', 'false');
       host.postMessage({ type: 'setMode', mode });
     });
   });
 
   document.getElementById('think-option')?.addEventListener('click', () => {
+    const conv = host.getCurrentConversation();
+    const newThink = !(conv?.think ?? false);
+    host.postMessage({ type: 'setThink', enabled: newThink });
+  });
+  document.getElementById('think-option')?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') {
+      return;
+    }
+    e.preventDefault();
     const conv = host.getCurrentConversation();
     const newThink = !(conv?.think ?? false);
     host.postMessage({ type: 'setThink', enabled: newThink });
@@ -250,15 +275,34 @@ export function attachIDEContextListeners(host: AppHost): void {
 function attachConversationPanelListeners(host: AppHost): void {
   // Click on conversation items
   document.querySelectorAll('.conversation-item').forEach(item => {
-    item.addEventListener('click', (e) => {
+    const conversationItem = item as HTMLElement;
+    conversationItem.addEventListener('click', (e) => {
       // Don't switch if clicking the delete button
       if ((e.target as HTMLElement).closest('.conversation-item-delete')) return;
-      const id = (item as HTMLElement).dataset.id;
+      const id = conversationItem.dataset.id;
       if (id) {
         host.showConversationPanel = false;
         host.conversationSearch = '';
+        document.getElementById('conversation-panel')?.classList.add('hidden');
+        document.getElementById('conversation-trigger')?.setAttribute('aria-expanded', 'false');
         host.postMessage({ type: 'switchConversation', conversationId: id });
       }
+    });
+    conversationItem.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') {
+        return;
+      }
+      if ((e.target as HTMLElement).closest('.conversation-item-delete')) return;
+      e.preventDefault();
+      const id = conversationItem.dataset.id;
+      if (!id) {
+        return;
+      }
+      host.showConversationPanel = false;
+      host.conversationSearch = '';
+      document.getElementById('conversation-panel')?.classList.add('hidden');
+      document.getElementById('conversation-trigger')?.setAttribute('aria-expanded', 'false');
+      host.postMessage({ type: 'switchConversation', conversationId: id });
     });
   });
 
