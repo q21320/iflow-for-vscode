@@ -536,9 +536,16 @@ function renderRoundFileChanges(summary: RoundFileChangeSummary | undefined): st
     return '';
   }
 
-  const fileCount = summary.changedFiles.length;
+  const visibleFiles = summary.changedFiles.filter((file) => file.status !== 'accepted');
+  if (visibleFiles.length === 0) {
+    return '';
+  }
+
+  const fileCount = visibleFiles.length;
   const fileLabel = fileCount === 1 ? 'file' : 'files';
-  const rowsHtml = summary.changedFiles.map((file) => `
+  const totalAdded = visibleFiles.reduce((sum, file) => sum + file.added, 0);
+  const totalRemoved = visibleFiles.reduce((sum, file) => sum + file.removed, 0);
+  const rowsHtml = visibleFiles.map((file) => `
     <div
       class="round-file-change-row status-${file.status}"
       role="button"
@@ -593,8 +600,8 @@ function renderRoundFileChanges(summary: RoundFileChangeSummary | undefined): st
       <div class="round-file-changes-header">
         <span>${fileCount} ${fileLabel} changed</span>
         <span class="round-file-changes-total">
-          <span class="round-file-change-added">+${summary.totalAdded}</span>
-          <span class="round-file-change-removed">-${summary.totalRemoved}</span>
+          <span class="round-file-change-added">+${totalAdded}</span>
+          <span class="round-file-change-removed">-${totalRemoved}</span>
         </span>
       </div>
       <div class="round-file-changes-list">
