@@ -120,10 +120,11 @@ suite('AcpClient', () => {
     // Avoid spawning real processes in unit tests.
     (client as any).processManager = {
       hasProcess: true,
+      currentPort: null,
       stopManagedProcess: () => {},
       clearAutoDetectCache: () => {},
       resolveStartMode: async () => null,
-      startManagedProcess: async () => {},
+      startManagedProcess: async () => 8090,
     };
   });
 

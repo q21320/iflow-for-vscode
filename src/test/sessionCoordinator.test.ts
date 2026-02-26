@@ -8,11 +8,13 @@ class FakeTransport {
   connected = false;
   connectCalls = 0;
   disconnectCalls = 0;
+  lastConnectUrl: string | null = null;
   onClose: ((error?: Error) => void) | null = null;
 
-  async connect(): Promise<void> {
+  async connect(options?: { url: string }): Promise<void> {
     this.connected = true;
     this.connectCalls += 1;
+    this.lastConnectUrl = options?.url ?? null;
   }
 
   async disconnect(): Promise<void> {
@@ -101,6 +103,7 @@ function createProcessManagerRecorder(
   startCalls: Array<{ enableStream: boolean | undefined }>;
   manager: {
     hasProcess: boolean;
+    currentPort: number | null;
     stopManagedProcess: () => void;
     resolveStartMode: () => Promise<{ nodePath: string; iflowScript: string; port: number } | null>;
     startManagedProcess: (
@@ -109,7 +112,7 @@ function createProcessManagerRecorder(
       iflowScript?: string,
       cwd?: string,
       enableStream?: boolean,
-    ) => Promise<void>;
+    ) => Promise<number>;
   };
 } {
   const startCalls: Array<{ enableStream: boolean | undefined }> = [];
@@ -118,6 +121,7 @@ function createProcessManagerRecorder(
     startCalls,
     manager: {
       hasProcess: false,
+      currentPort: null,
       stopManagedProcess: () => {},
       resolveStartMode: async () => startInfo,
       startManagedProcess: async (
@@ -128,6 +132,7 @@ function createProcessManagerRecorder(
         enableStream?: boolean,
       ) => {
         startCalls.push({ enableStream });
+        return startInfo?.port ?? 8090;
       },
     },
   };
@@ -144,9 +149,10 @@ suite('SessionCoordinator', () => {
       createProtocol: () => protocol as never,
       getProcessManager: () => ({
         hasProcess: true,
+        currentPort: null,
         stopManagedProcess: () => {},
         resolveStartMode: async () => null,
-        startManagedProcess: async () => {},
+        startManagedProcess: async () => 8090,
       }),
       getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
       runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
@@ -166,6 +172,60 @@ suite('SessionCoordinator', () => {
     assert.ok(snapshots.some((s) => s.snapshot.status === 'ready'));
   });
 
+  test('uses managed process actual port when startup returns a different port', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => ({
+        hasProcess: false,
+        currentPort: null,
+        stopManagedProcess: () => {},
+        resolveStartMode: async () => ({
+          nodePath: '/usr/bin/node',
+          iflowScript: '/tmp/iflow.js',
+          port: 8090,
+        }),
+        startManagedProcess: async () => 30604,
+      }),
+      getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions());
+    assert.strictEqual(transport.lastConnectUrl, 'ws://localhost:30604/acp');
+  });
+
+  test('uses current managed process port when process already exists', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => ({
+        hasProcess: true,
+        currentPort: 30604,
+        stopManagedProcess: () => {},
+        resolveStartMode: async () => null,
+        startManagedProcess: async () => {
+          throw new Error('should not start managed process when one already exists');
+        },
+      }),
+      getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions());
+    assert.strictEqual(transport.lastConnectUrl, 'ws://localhost:30604/acp');
+  });
+
   test('reuses connection for same cwd and loads requested session', async () => {
     const transport = new FakeTransport();
     const protocol = new FakeProtocol();
@@ -175,9 +235,10 @@ suite('SessionCoordinator', () => {
       createProtocol: () => protocol as never,
       getProcessManager: () => ({
         hasProcess: true,
+        currentPort: null,
         stopManagedProcess: () => {},
         resolveStartMode: async () => null,
-        startManagedProcess: async () => {},
+        startManagedProcess: async () => 8090,
       }),
       getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
       runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
@@ -214,9 +275,10 @@ suite('SessionCoordinator', () => {
       createProtocol: () => (createTransportCalls === 1 ? protocolA : protocolB) as never,
       getProcessManager: () => ({
         hasProcess: true,
+        currentPort: null,
         stopManagedProcess: () => {},
         resolveStartMode: async () => null,
-        startManagedProcess: async () => {},
+        startManagedProcess: async () => 8090,
       }),
       getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
       runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
@@ -241,9 +303,10 @@ suite('SessionCoordinator', () => {
       createProtocol: () => protocol as never,
       getProcessManager: () => ({
         hasProcess: true,
+        currentPort: null,
         stopManagedProcess: () => {},
         resolveStartMode: async () => null,
-        startManagedProcess: async () => {},
+        startManagedProcess: async () => 8090,
       }),
       getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
       runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
@@ -269,9 +332,10 @@ suite('SessionCoordinator', () => {
       createProtocol: () => protocol as never,
       getProcessManager: () => ({
         hasProcess: true,
+        currentPort: null,
         stopManagedProcess: () => {},
         resolveStartMode: async () => null,
-        startManagedProcess: async () => {},
+        startManagedProcess: async () => 8090,
       }),
       getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
       runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
@@ -300,9 +364,10 @@ suite('SessionCoordinator', () => {
       createProtocol: () => protocol as never,
       getProcessManager: () => ({
         hasProcess: true,
+        currentPort: null,
         stopManagedProcess: () => {},
         resolveStartMode: async () => null,
-        startManagedProcess: async () => {},
+        startManagedProcess: async () => 8090,
       }),
       getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
       runtimeConfigApplier: new RuntimeConfigApplier(() => {}),

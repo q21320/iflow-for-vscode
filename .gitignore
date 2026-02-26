@@ -5,7 +5,8 @@ node_modules
 *.vsix
 CLAUDE.md
 AGENTS.md
-TypeScript SDK.md
+API.md
 .claude/
 try.py
+REFACTOR.md
 everything-claude-code/

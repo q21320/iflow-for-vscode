@@ -6,6 +6,7 @@ import { ConnectionSnapshot, ConnectionStateListener, ConnectionStatus, RunOptio
 
 interface ProcessManagerLike {
   hasProcess: boolean;
+  currentPort: number | null;
   stopManagedProcess(): void;
   resolveStartMode(config: { nodePath: string | null; port: number }): Promise<{ nodePath: string; iflowScript: string; port: number } | null>;
   startManagedProcess(
@@ -14,7 +15,7 @@ interface ProcessManagerLike {
     iflowScript?: string,
     cwd?: string,
     enableStream?: boolean,
-  ): Promise<void>;
+  ): Promise<number>;
 }
 
 interface SessionCoordinatorDependencies {
@@ -144,7 +145,8 @@ export class SessionCoordinator {
       'connect_start',
     );
 
-    const port = this.deps.getConfig<number>('port', 8090);
+    const configuredPort = this.deps.getConfig<number>('port', 8090);
+    let acpPort = configuredPort;
     const timeout = this.deps.getConfig<number>('timeout', 60000);
     const enableCliStream = this.deps.getConfig<boolean>('enableCliStream', true);
 
@@ -152,11 +154,11 @@ export class SessionCoordinator {
     if (!processManager.hasProcess) {
       const startInfo = await processManager.resolveStartMode({
         nodePath: this.deps.getConfig<string | null>('nodePath', null),
-        port,
+        port: configuredPort,
       });
 
       if (startInfo) {
-        await processManager.startManagedProcess(
+        acpPort = await processManager.startManagedProcess(
           startInfo.nodePath,
           startInfo.port,
           startInfo.iflowScript,
@@ -168,6 +170,8 @@ export class SessionCoordinator {
           'iFlow CLI not found. Please install it (npm i -g @iflow-ai/iflow-cli) or set iflow.nodePath in settings.'
         );
       }
+    } else if (typeof processManager.currentPort === 'number') {
+      acpPort = processManager.currentPort;
     }
 
     const transport = this.deps.createTransport();
@@ -182,7 +186,7 @@ export class SessionCoordinator {
 
     try {
       const connectOptions: AcpTransportOptions = {
-        url: `ws://localhost:${port}/acp`,
+        url: `ws://localhost:${acpPort}/acp`,
         timeout,
       };
       await transport.connect(connectOptions);
