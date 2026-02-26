@@ -250,6 +250,14 @@ class IFlowApp implements AppHost {
       selection: this.ideContextDismissed.selection ? null : this.ideContext.selection,
     };
     const hasContext = ideContext.activeFile !== null || ideContext.selection !== null;
+    const conversationId = this.state?.currentConversationId;
+
+    if (conversationId && this.latestRoundChangesByConversationId.has(conversationId)) {
+      const next = new Map(this.latestRoundChangesByConversationId);
+      next.delete(conversationId);
+      this.latestRoundChangesByConversationId = next;
+      document.querySelector('.round-file-changes-card')?.remove();
+    }
 
     this.vscode.postMessage({
       type: 'sendMessage',

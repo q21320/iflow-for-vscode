@@ -14,7 +14,7 @@
 ![Tool Call](https://raw.githubusercontent.com/xsw632/iflow-for-vscode/main/media/image-3.png)
 
 ### 4) Code diff的实现
-
+![Code diff](https://raw.githubusercontent.com/xsw632/iflow-for-vscode/main/media/image-4.png)
 
 
 ## 功能
