@@ -192,10 +192,20 @@ export class AcpClient {
       this.pathPolicy.setAllowedDirs(allowedDirs);
 
       // Establish or reuse ACP connection/session.
-      await this.sessionCoordinator.ensureConnected(options);
+      try {
+        await this.sessionCoordinator.ensureConnected(options);
+      } catch (connectError) {
+        if (options.sessionId && this.isMissingSessionError(connectError)) {
+          this.log('ACP session missing during connect/load. Falling back to a fresh session.');
+          const recovered = await this.recoverMissingSession(options);
+          options = { ...options, sessionId: recovered.sessionId };
+        } else {
+          throw connectError;
+        }
+      }
 
-      const protocol = this.sessionCoordinator.currentProtocol;
-      const sessionId = this.sessionCoordinator.currentSessionId;
+      let protocol = this.sessionCoordinator.currentProtocol;
+      let sessionId = this.sessionCoordinator.currentSessionId;
       if (!protocol || !sessionId) {
         throw new Error('No active ACP protocol/session');
       }
@@ -215,8 +225,8 @@ export class AcpClient {
         (msg) => this.log(msg),
       );
 
-      const registerNotificationHandler = (): void => {
-        protocol.onNotification('session/update', (params: unknown) => {
+      const registerNotificationHandler = (targetProtocol: AcpProtocol): void => {
+        targetProtocol.onNotification('session/update', (params: unknown) => {
           const envelope = isObject(params) ? params as AcpNotificationEnvelope : {};
           const update = this.mergeEnvelopeUsage(params, envelope);
           inactivityGuard.markActivity(update);
@@ -231,7 +241,7 @@ export class AcpClient {
         });
       };
 
-      registerNotificationHandler();
+      registerNotificationHandler(protocol);
       inactivityGuard.start(() => this.running);
 
       const builtPrompt = this.chunkMapper.buildPrompt({
@@ -255,7 +265,21 @@ export class AcpClient {
           needsRecovery = true;
         }
       } catch (promptError) {
-        if (inactivityGuard.didTrigger) {
+        if (this.isMissingSessionError(promptError)) {
+          this.log('ACP session missing during prompt. Recreating session and retrying once.');
+          const recovered = await this.recoverMissingSession(options);
+          protocol = recovered.protocol;
+          sessionId = recovered.sessionId;
+          registerNotificationHandler(protocol);
+
+          promptResult = await protocol.sendRequest('session/prompt', {
+            sessionId,
+            prompt: [{ type: 'text', text: builtPrompt }],
+          });
+          if (inactivityGuard.didTrigger) {
+            needsRecovery = true;
+          }
+        } else if (inactivityGuard.didTrigger) {
           needsRecovery = true;
         } else {
           throw promptError;
@@ -276,7 +300,7 @@ export class AcpClient {
         });
 
         this.chunkMapper.reset();
-        registerNotificationHandler();
+        registerNotificationHandler(protocol);
 
         const recoveryPrompt =
           `<system-reminder>The sub-agent "${toolDesc}" (tool: ${stuckTool.name}) ` +
@@ -445,6 +469,30 @@ export class AcpClient {
 
   private emitChunk(chunk: StreamChunk): void {
     this.activeChunkSink?.(chunk);
+  }
+
+  private isMissingSessionError(error: unknown): boolean {
+    const normalized = normalizeErrorMessage(error, '').toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    return normalized.includes('session not found')
+      || (normalized.includes('session') && normalized.includes('not found'));
+  }
+
+  private async recoverMissingSession(
+    options: RunOptions,
+  ): Promise<{ protocol: AcpProtocol; sessionId: string }> {
+    await this.sessionCoordinator.ensureConnected({
+      ...options,
+      sessionId: undefined,
+    });
+    const protocol = this.sessionCoordinator.currentProtocol;
+    const sessionId = this.sessionCoordinator.currentSessionId;
+    if (!protocol || !sessionId) {
+      throw new Error('Failed to recover ACP session after session-not-found');
+    }
+    return { protocol, sessionId };
   }
 
   private handleConnectionStateChange(snapshot: ConnectionSnapshot, reason: string, error?: Error): void {

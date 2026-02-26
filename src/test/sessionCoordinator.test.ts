@@ -232,6 +232,33 @@ suite('SessionCoordinator', () => {
     assert.strictEqual(coordinator.currentCwd, '/tmp/workspace-b');
   });
 
+  test('reuses connection when cwd differs only by trailing separator', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => ({
+        hasProcess: true,
+        stopManagedProcess: () => {},
+        resolveStartMode: async () => null,
+        startManagedProcess: async () => {},
+      }),
+      getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions({ cwd: '/tmp/workspace-a/' }));
+    const connectCallsAfterFirstRun = transport.connectCalls;
+
+    await coordinator.ensureConnected(baseRunOptions({ cwd: '/tmp/workspace-a' }));
+
+    assert.strictEqual(transport.connectCalls, connectCallsAfterFirstRun);
+  });
+
   test('rolls back to disconnected on initialization failure', async () => {
     const transport = new FakeTransport();
     const protocol = new FakeProtocol();

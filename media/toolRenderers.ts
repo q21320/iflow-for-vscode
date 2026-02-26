@@ -243,11 +243,9 @@ function extractEditedFileDiffFromPatch(block: ToolBlock): { fileName: string; a
         oldLine = Number(hunk[1]);
         newLine = Number(hunk[2]);
       }
-      renderedLines.push({ kind: 'meta', text: line });
       continue;
     }
     if (line.startsWith('diff --git ') || line.startsWith('*** ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
-      renderedLines.push({ kind: 'meta', text: line });
       continue;
     }
     if (line.startsWith('+') && !line.startsWith('+++')) {
@@ -278,7 +276,7 @@ function extractEditedFileDiffFromPatch(block: ToolBlock): { fileName: string; a
 
   const visibleLines = renderedLines.slice(0, MAX_DIFF_LINES);
   if (renderedLines.length > MAX_DIFF_LINES) {
-    visibleLines.push({ kind: 'meta', text: `... ${renderedLines.length - MAX_DIFF_LINES} more lines` });
+    visibleLines.push({ kind: 'ctx', text: `... ${renderedLines.length - MAX_DIFF_LINES} more lines` });
   }
 
   return {
@@ -325,7 +323,7 @@ function extractEditedFileDiffFromOldNew(block: ToolBlock): { fileName: string; 
 
   const visibleLines = renderedLines.slice(0, MAX_DIFF_LINES);
   if (renderedLines.length > MAX_DIFF_LINES) {
-    visibleLines.push({ kind: 'meta', text: `... ${renderedLines.length - MAX_DIFF_LINES} more lines` });
+    visibleLines.push({ kind: 'ctx', text: `... ${renderedLines.length - MAX_DIFF_LINES} more lines` });
   }
 
   return { fileName, added, removed, lines: visibleLines };
@@ -386,7 +384,6 @@ function renderWriteFilePreview(block: ToolBlock): string {
   const lineHtml = visible.map((line, idx) => `
     <div class="diff-line add">
       <span class="diff-line-no">${idx + 1}</span>
-      <span class="diff-kind-label">Added</span>
       <span class="diff-sign">+</span>
       <span class="diff-text">${escapeHtml(line)}</span>
     </div>
@@ -417,18 +414,10 @@ function renderEditedFilePreview(block: ToolBlock): string {
   }
 
   const lineHtml = diff.lines.map(line => {
-    const sign = line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : line.kind === 'meta' ? '@' : ' ';
-    const label = line.kind === 'add'
-      ? 'Added'
-      : line.kind === 'del'
-        ? 'Removed'
-        : line.kind === 'meta'
-          ? 'Meta'
-          : 'Context';
+    const sign = line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : '';
     return `
       <div class="diff-line ${line.kind}">
         <span class="diff-line-no">${line.lineNo ?? ''}</span>
-        <span class="diff-kind-label">${label}</span>
         <span class="diff-sign">${sign}</span>
         <span class="diff-text">${escapeHtml(line.text)}</span>
       </div>

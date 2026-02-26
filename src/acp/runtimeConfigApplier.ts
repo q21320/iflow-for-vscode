@@ -1,6 +1,7 @@
 import { ConversationMode, ModelType } from '../protocol';
 import { RunOptions } from './types';
 import { AcpProtocol } from '../acpProtocol';
+import * as path from 'path';
 
 /**
  * Plan mode workflow instructions appended to the system prompt when the
@@ -126,7 +127,21 @@ export function needsReconnect(currentCwd: string | null, nextCwd: string | null
 }
 
 export function normalizeCwd(input: string | undefined): string | null {
-  return input ?? null;
+  if (!input) {
+    return null;
+  }
+
+  const normalized = path.normalize(input);
+  const root = path.parse(normalized).root;
+  const withoutTrailingSep = normalized.length > root.length
+    ? normalized.replace(/[\\/]+$/, '')
+    : normalized;
+
+  if (process.platform === 'win32') {
+    return withoutTrailingSep.toLowerCase();
+  }
+
+  return withoutTrailingSep;
 }
 
 export type SessionMode = ConversationMode;

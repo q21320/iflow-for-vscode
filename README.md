@@ -13,6 +13,9 @@
 ### 3) Edit File 以及 Bash 等 tool 渲染
 ![Tool Call](https://raw.githubusercontent.com/xsw632/iflow-for-vscode/main/media/image-3.png)
 
+### 4) Code diff的实现
+
+
 
 ## 功能
 

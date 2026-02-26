@@ -278,6 +278,85 @@ suite('AcpClient', () => {
     assert.strictEqual(usage?.totalTokens, 798);
   });
 
+  test('run recreates session and retries when prompt returns session not found', async () => {
+    let ended = false;
+    let error: string | null = null;
+    const chunks: any[] = [];
+    let promptCalls = 0;
+
+    const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
+    fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
+      if (method === 'session/prompt') {
+        promptCalls += 1;
+        if (promptCalls === 1) {
+          fakeProtocol.requests.push({ method, params });
+          throw new Error('[JSON-RPC -32600] Invalid request (data: {"details":"Session not found: stale-1"})');
+        }
+      }
+      return originalSendRequest(method, params);
+    };
+
+    const sessionId = await client.run(
+      {
+        prompt: 'hello',
+        attachedFiles: [],
+        mode: 'default',
+        think: false,
+        model: 'GLM-4.7' as any,
+      },
+      (chunk) => chunks.push(chunk),
+      () => { ended = true; },
+      (err) => { error = err; },
+    );
+
+    assert.strictEqual(error, null);
+    assert.strictEqual(ended, true);
+    assert.strictEqual(sessionId, 'test-session-123');
+    assert.strictEqual(promptCalls, 2);
+    assert.ok(fakeProtocol.requests.filter((r) => r.method === 'session/new').length >= 2);
+    assert.ok(chunks.some((c) => c.chunkType === 'text'));
+  });
+
+  test('run falls back to new session when stored sessionId no longer exists', async () => {
+    let ended = false;
+    let error: string | null = null;
+    const chunks: any[] = [];
+    let loadCalls = 0;
+
+    const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
+    fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
+      if (method === 'session/load') {
+        loadCalls += 1;
+        if (loadCalls === 1) {
+          fakeProtocol.requests.push({ method, params });
+          throw new Error('[JSON-RPC -32600] Invalid request (data: {"details":"Session not found: persisted-1"})');
+        }
+      }
+      return originalSendRequest(method, params);
+    };
+
+    const sessionId = await client.run(
+      {
+        prompt: 'resume session',
+        attachedFiles: [],
+        mode: 'default',
+        think: false,
+        model: 'GLM-4.7' as any,
+        sessionId: 'persisted-1',
+      },
+      (chunk) => chunks.push(chunk),
+      () => { ended = true; },
+      (err) => { error = err; },
+    );
+
+    assert.strictEqual(error, null);
+    assert.strictEqual(ended, true);
+    assert.strictEqual(sessionId, 'test-session-123');
+    assert.strictEqual(loadCalls, 1);
+    assert.ok(fakeProtocol.requests.some((r) => r.method === 'session/new'));
+    assert.ok(chunks.some((c) => c.chunkType === 'text'));
+  });
+
   test('run sends thinkConfig when thinking is enabled', async () => {
     await client.run(
       {

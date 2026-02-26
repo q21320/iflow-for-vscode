@@ -8,6 +8,8 @@
   --accent: var(--vscode-textLink-foreground);
   --text-primary: var(--vscode-foreground);
   --text-secondary: var(--vscode-descriptionForeground);
+  --surface-soft: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.1));
+  --surface-strong: var(--vscode-editorHoverWidget-background, rgba(128, 128, 128, 0.16));
 
   --spacing-xs: 4px;
   --spacing-sm: 8px;
@@ -34,7 +36,9 @@ body {
   font-size: 13px;
   line-height: 1.6;
   color: var(--text-primary);
-  background-color: var(--bg-app);
+  background:
+    radial-gradient(120% 90% at 50% -25%, rgba(127, 127, 127, 0.14), transparent 60%),
+    var(--bg-app);
 }
 
 button:focus-visible,
@@ -568,7 +572,7 @@ select:focus-visible,
 
 .diff-line {
   display: grid;
-  grid-template-columns: 52px 64px 16px 1fr;
+  grid-template-columns: 52px 16px 1fr;
   align-items: start;
 }
 
@@ -583,16 +587,6 @@ select:focus-visible,
 .diff-sign {
   text-align: center;
   opacity: 0.8;
-  user-select: none;
-}
-
-.diff-kind-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: var(--text-secondary);
-  opacity: 0.9;
-  padding-right: 6px;
   user-select: none;
 }
 
@@ -816,10 +810,12 @@ select:focus-visible,
   transform: translateX(-50%);
   width: calc(100% - 32px);
   max-width: 1200px;
-  background-color: var(--bg-panel);
-  border: 1px solid var(--border);
+  background:
+    linear-gradient(150deg, rgba(127, 127, 127, 0.16) 0%, rgba(127, 127, 127, 0.04) 38%, rgba(127, 127, 127, 0.02) 100%),
+    var(--bg-panel);
+  border: 1px solid var(--vscode-editorWidget-border, var(--border));
   border-radius: var(--radius-xl);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
   padding: var(--spacing-sm);
   z-index: 100;
   display: flex;
@@ -829,14 +825,16 @@ select:focus-visible,
 }
 
 .composer:focus-within {
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.28);
   border-color: var(--vscode-focusBorder);
 }
 
 .round-file-changes-card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--vscode-editorWidget-border, var(--border));
   border-radius: var(--radius-md);
-  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  background:
+    linear-gradient(180deg, rgba(127, 127, 127, 0.08) 0%, rgba(127, 127, 127, 0.03) 100%),
+    var(--surface-soft);
   overflow: hidden;
 }
 
@@ -866,8 +864,9 @@ select:focus-visible,
   gap: 10px;
   align-items: center;
   padding: 7px 10px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid rgba(127, 127, 127, 0.2);
   cursor: pointer;
+  transition: background-color 0.12s ease;
 }
 
 .round-file-change-row:first-child {
@@ -883,7 +882,7 @@ select:focus-visible,
 .round-file-change-main {
   min-width: 0;
   display: inline-flex;
-  gap: 8px;
+  gap: 9px;
   align-items: center;
 }
 
@@ -891,8 +890,8 @@ select:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--vscode-editor-font-family, 'Fira Code', monospace);
   font-size: 12px;
+  font-weight: 500;
 }
 
 .round-file-change-kind {
@@ -925,7 +924,7 @@ select:focus-visible,
 
 .round-file-change-action {
   border: 1px solid var(--border);
-  background: var(--bg-panel);
+  background: var(--surface-strong);
   color: var(--text-primary);
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -935,7 +934,7 @@ select:focus-visible,
 }
 
 .round-file-change-action:hover {
-  background: var(--vscode-toolbar-hoverBackground);
+  background: var(--vscode-list-hoverBackground);
 }
 
 .round-file-change-row.status-accepted {
@@ -1041,8 +1040,99 @@ select:focus-visible,
 }
 
 .file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0 3px;
+  border-radius: 5px;
+  border: 1px solid rgba(127, 127, 127, 0.32);
+  background: rgba(127, 127, 127, 0.16);
+  color: var(--text-primary);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
   flex-shrink: 0;
-  opacity: 0.9;
+  opacity: 0.96;
+}
+
+.file-icon-json {
+  background: rgba(245, 205, 72, 0.2);
+  color: #d7ba7d;
+}
+
+.file-icon-ts {
+  background: rgba(74, 149, 255, 0.2);
+  color: #73c5ff;
+}
+
+.file-icon-js {
+  background: rgba(244, 215, 96, 0.2);
+  color: #f6d571;
+}
+
+.file-icon-py {
+  background: rgba(71, 182, 138, 0.2);
+  color: #7fdcb5;
+}
+
+.file-icon-go {
+  background: rgba(86, 196, 214, 0.2);
+  color: #7ad8e7;
+}
+
+.file-icon-rs {
+  background: rgba(232, 152, 91, 0.2);
+  color: #f0b17b;
+}
+
+.file-icon-java {
+  background: rgba(199, 126, 255, 0.2);
+  color: #cf9cff;
+}
+
+.file-icon-css {
+  background: rgba(87, 163, 255, 0.2);
+  color: #86c2ff;
+}
+
+.file-icon-html {
+  background: rgba(250, 129, 91, 0.2);
+  color: #ffb18f;
+}
+
+.file-icon-md {
+  background: rgba(182, 149, 255, 0.2);
+  color: #cab2ff;
+}
+
+.file-icon-config {
+  background: rgba(162, 202, 255, 0.2);
+  color: #9ecbff;
+}
+
+.file-icon-shell {
+  background: rgba(105, 208, 141, 0.2);
+  color: #78d4a4;
+}
+
+.file-icon-text,
+.file-icon-file,
+.file-icon-plain,
+.file-icon-lock,
+.file-icon-pdf,
+.file-icon-image {
+  background: rgba(127, 127, 127, 0.2);
+  color: var(--text-secondary);
+}
+
+.round-file-change-icon {
+  width: 17px;
+  height: 17px;
+  font-size: 8px;
 }
 
 .file-name {
@@ -1076,10 +1166,16 @@ select:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  background: var(--bg-input);
+  background:
+    linear-gradient(165deg, rgba(127, 127, 127, 0.14), rgba(127, 127, 127, 0.04)),
+    var(--bg-input);
   border-radius: var(--radius-lg);
   padding: 4px;
-  border: 1px solid transparent;
+  border: 1px solid rgba(127, 127, 127, 0.24);
+}
+
+.composer:focus-within .composer-input-row {
+  border-color: var(--vscode-focusBorder, #4f9cff);
 }
 
 .input-wrapper {

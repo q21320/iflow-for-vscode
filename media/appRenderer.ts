@@ -12,7 +12,7 @@ import type {
 import { MODELS } from '../src/protocol';
 import { escapeHtml, renderMarkdown } from './markdownRenderer';
 import { getToolHeadline, renderToolDetailPreview } from './toolRenderers';
-import { getFileName, getFileIcon } from './fileUtils';
+import { getFileName, getFileIcon, getFileIconClass } from './fileUtils';
 import { escapeAttr } from './webviewUtils';
 import type { PendingConfirmation, PendingPlanApproval, PendingQuestion } from './panels/panelTypes';
 import { renderApprovalPanel, renderPlanApprovalPanel, renderQuestionPanel } from './panels/panelRenderers';
@@ -32,6 +32,14 @@ function timeAgo(timestamp: number, now: number): string {
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderFileIcon(path: string, extraClass = ''): string {
+  const classes = ['file-icon', getFileIconClass(path)];
+  if (extraClass) {
+    classes.push(extraClass);
+  }
+  return `<span class="${classes.join(' ')}" aria-hidden="true">${escapeHtml(getFileIcon(path))}</span>`;
 }
 
 export function getModeLabel(mode: ConversationMode): string {
@@ -241,7 +249,7 @@ function renderMessage(message: Message): string {
               title="Open ${escapeAttr(getFileName(f.path))}"
               aria-label="Open file ${escapeAttr(getFileName(f.path))}"
             >
-              <span class="file-icon">${getFileIcon(f.path)}</span>
+              ${renderFileIcon(f.path)}
               <span class="file-name">${escapeHtml(getFileName(f.path))}</span>
             </button>
           `).join('')}
@@ -301,7 +309,7 @@ export function renderBlock(block: OutputBlock): string {
     case 'file_ref':
       return `
         <div class="block-file-ref">
-          <span class="file-icon">📄</span>
+          ${renderFileIcon(block.path)}
           <span class="file-path">${escapeHtml(block.path)}</span>
           ${block.lineStart ? `<span class="line-range">:${block.lineStart}${block.lineEnd ? `-${block.lineEnd}` : ''}</span>` : ''}
         </div>
@@ -401,7 +409,7 @@ export function renderIDEContextChips(
   if (context.activeFile && !dismissed.activeFile) {
     chips.push(`
       <div class="ide-context-chip" title="${escapeAttr(context.activeFile.path)}">
-        <span class="file-icon">${getFileIcon(context.activeFile.path)}</span>
+        ${renderFileIcon(context.activeFile.path)}
         <span class="ide-context-label">${escapeHtml(context.activeFile.name)}</span>
         <button class="ide-context-dismiss" data-dismiss="activeFile" title="Remove" aria-label="Dismiss active file context">&times;</button>
       </div>
@@ -543,6 +551,7 @@ function renderRoundFileChanges(summary: RoundFileChangeSummary | undefined): st
       aria-label="Open diff for ${escapeAttr(file.displayPath)}"
     >
       <span class="round-file-change-main">
+        ${renderFileIcon(file.path, 'round-file-change-icon')}
         <span class="round-file-change-path">${escapeHtml(file.displayPath)}</span>
         <span class="round-file-change-kind">${escapeHtml(file.kind)}</span>
       </span>

@@ -35,6 +35,7 @@ interface SendMessagePipelineDependencies {
   client: AcpClient;
   postMessage: (message: ExtensionMessage) => void;
   markCliUnavailable: (diagnostics: string) => void;
+  clearSessionId?: () => void;
   resolveWorkspaceFolder: (conversation: Conversation) => string | undefined;
   getAllWorkspaceFolderPaths: () => string[];
   getWorkspaceFileList: (cwd?: string, limit?: number) => Promise<string[]>;
@@ -234,7 +235,10 @@ export class SendMessagePipeline {
           flushPendingStatePublish();
           let normalizedError = normalizeErrorMessage(error);
           this.deps.debug(`Run failed: ${normalizedError}`);
-          if (this.shouldResetCli(normalizedError)) {
+          if (this.isMissingSessionError(normalizedError)) {
+            this.deps.debug('Detected missing ACP session; clearing persisted conversation session id');
+            this.deps.clearSessionId?.();
+          } else if (this.shouldResetCli(normalizedError)) {
             this.deps.markCliUnavailable(normalizedError);
             normalizedError = this.appendCliReconnectHint(normalizedError);
           }
@@ -335,10 +339,24 @@ export class SendMessagePipeline {
   }
 
   private shouldResetCli(error: string): boolean {
-    return error.includes('connect')
-      || error.includes('ECONNREFUSED')
-      || error.includes('not found')
-      || error.includes('not available');
+    if (this.isMissingSessionError(error)) {
+      return false;
+    }
+
+    const normalized = error.toLowerCase();
+    return normalized.includes('connect')
+      || normalized.includes('econnrefused')
+      || normalized.includes('socket hang up')
+      || normalized.includes('econnreset')
+      || normalized.includes('epipe')
+      || normalized.includes('not available')
+      || normalized.includes('cli not found');
+  }
+
+  private isMissingSessionError(error: string): boolean {
+    const normalized = error.toLowerCase();
+    return normalized.includes('session not found')
+      || (normalized.includes('session') && normalized.includes('not found'));
   }
 
   private resolveStreamRenderIntervalMs(): number {

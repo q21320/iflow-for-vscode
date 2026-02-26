@@ -142,6 +142,7 @@ export class WebviewHandler {
       client: this.client,
       postMessage: (message) => this.postMessage(message),
       markCliUnavailable: (diagnostics) => this.markCliUnavailable(diagnostics),
+      clearSessionId: () => this.store.clearSessionId(),
       resolveWorkspaceFolder: (conversation) =>
         this.workspaceFileService.resolveWorkspaceFolder(conversation, this.deps.getActiveTextEditor()),
       getAllWorkspaceFolderPaths: () => this.workspaceFileService.getAllWorkspaceFolderPaths(),

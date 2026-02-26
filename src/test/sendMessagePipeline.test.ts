@@ -219,6 +219,48 @@ suite('SendMessagePipeline', () => {
     assert.strictEqual(failingClient.runCalls.length, 1);
   });
 
+  test('does not mark CLI unavailable on session-not-found and clears stored session id', async () => {
+    const store = createStore();
+    store.setSessionId('stale-session-1');
+    const messages: ExtensionMessage[] = [];
+    const markCliUnavailableCalls: string[] = [];
+    const failingClient = new FakeClient(async (_options, _onChunk, _onEnd, onError) => {
+      onError('[JSON-RPC -32600] Invalid request (data: {"details":"Session not found: stale-session-1"})');
+      return undefined;
+    });
+
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: failingClient as unknown as import('../acpClient').AcpClient,
+      postMessage: (message) => messages.push(message),
+      markCliUnavailable: (diagnostics) => {
+        markCliUnavailableCalls.push(diagnostics);
+      },
+      clearSessionId: () => store.clearSessionId(),
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 50,
+      planApprovalCoordinator: new PlanApprovalCoordinator(new PlanModeOrchestrator()),
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+    });
+
+    await pipeline.execute({
+      content: 'trigger session missing',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    assert.strictEqual(markCliUnavailableCalls.length, 0);
+    assert.strictEqual(store.getCurrentConversation()?.sessionId, undefined);
+    const streamError = messages.find((m) => m.type === 'streamError') as Extract<ExtensionMessage, { type: 'streamError' }> | undefined;
+    assert.ok(streamError);
+    assert.ok(!streamError?.error.includes('Re-check CLI'));
+  });
+
   test('replays approved plan via queue without recursive send', async () => {
     const store = createStore();
     store.setMode('plan');

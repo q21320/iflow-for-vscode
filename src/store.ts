@@ -227,6 +227,19 @@ export class ConversationStore {
     }
   }
 
+  clearSessionId(): void {
+    const updated = this.updateCurrentConversation((conversation) => ({
+      ...conversation,
+      sessionId: undefined,
+      updatedAt: Date.now(),
+    }));
+
+    if (updated) {
+      this.save();
+      this.notifyChange();
+    }
+  }
+
   addUserMessage(content: string, attachedFiles: AttachedFile[]): Message {
     let conversation = this.getCurrentConversation();
     if (!conversation) {
