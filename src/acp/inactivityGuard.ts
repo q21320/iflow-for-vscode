@@ -1,12 +1,9 @@
 import { SUBAGENT_INACTIVITY_CHECK_INTERVAL_MS } from '../constants/runtime';
+import { isObject } from '../shared/typeGuards';
 
 export interface InProgressTool {
   name: string;
   title: string;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 export class InactivityGuard {

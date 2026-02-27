@@ -1,3 +1,3 @@
-export { attachApprovalListeners } from './approvalPanelBinder';
-export { attachQuestionListeners } from './questionPanelBinder';
-export { attachPlanApprovalListeners } from './planApprovalPanelBinder';
+export { attachApprovalListeners } from './panelControllers';
+export { attachQuestionListeners } from './panelControllers';
+export { attachPlanApprovalListeners } from './panelControllers';

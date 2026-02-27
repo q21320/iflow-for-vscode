@@ -3,6 +3,7 @@ import * as path from 'path';
 import { StreamChunk } from '../protocol';
 import { AcpProtocol } from '../acpProtocol';
 import { PendingInteraction, PendingPlan, PendingQuestion, PendingPermission, PermissionOption } from './types';
+import { isObject } from '../shared/typeGuards';
 
 interface ToolCallParams {
   toolCall?: {
@@ -35,10 +36,6 @@ interface PlanParams {
 
 interface InteractionBridgeOptions {
   interactionTimeoutMs?: number;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 export class InteractionBridge {

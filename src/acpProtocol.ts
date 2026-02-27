@@ -163,6 +163,9 @@ export class AcpProtocol {
       try {
         message = JSON.parse(raw);
       } catch {
+        if (raw.trimStart().startsWith('//')) {
+          continue;
+        }
         this.log(`Ignoring malformed JSON: ${raw.substring(0, 100)}`);
         continue;
       }

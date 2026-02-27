@@ -97,16 +97,16 @@ export class ProcessManager {
 
     this.logInfo(`Auto-detection: found iflow at ${iflowPath}`);
 
-    const nodePath = await deriveNodePathFromIFlow(iflowPath, logFn);
-    if (!nodePath) {
-      this.logInfo('Auto-detection: could not derive node path from iflow location');
+    const iflowScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
+    if (!iflowScript) {
+      this.logInfo('Auto-detection: failed to resolve iFlow script from CLI wrapper');
       this._cachedAutoDetect = null;
       return null;
     }
 
-    const iflowScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
-    if (!iflowScript) {
-      this.logInfo('Auto-detection: failed to resolve iFlow script from CLI wrapper');
+    const nodePath = await deriveNodePathFromIFlow(iflowPath, logFn, iflowScript);
+    if (!nodePath) {
+      this.logInfo('Auto-detection: could not derive node path from iflow location');
       this._cachedAutoDetect = null;
       return null;
     }

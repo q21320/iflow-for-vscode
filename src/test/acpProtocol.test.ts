@@ -305,4 +305,17 @@ suite('AcpProtocol', () => {
     // No response sent
     assert.strictEqual(transport.sent.length, sentBefore);
   });
+
+  test('comment-prefixed non-JSON frames are silently ignored', async () => {
+    protocol.dispose();
+    const logs: string[] = [];
+    protocol = new AcpProtocol(transport as any, (msg: string) => logs.push(msg));
+    protocol.startReceiveLoop();
+
+    transport.deliver('//ready');
+    transport.deliver('//stderr [WS 2] Embedded iFlow ACP peer started');
+
+    await new Promise(r => setTimeout(r, 50));
+    assert.deepStrictEqual(logs, []);
+  });
 });

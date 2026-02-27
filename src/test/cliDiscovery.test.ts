@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { resolveIFlowScriptCrossPlatform } from '../cliDiscovery';
+import { deriveNodePathFromIFlow, resolveIFlowScriptCrossPlatform } from '../cliDiscovery';
 
 suite('cliDiscovery PowerShell Parsing', () => {
   let tempDir: string;
@@ -213,5 +213,54 @@ node "%~dp0/node_modules/@iflow-ai/iflow-cli/bundle/entry.js" %*
     const result = resolveIFlowScriptCrossPlatform(cmdPath, () => {});
     
     assert.strictEqual(result, path.join(jsDir, 'entry.js'), 'Should handle forward slashes');
+  });
+});
+
+suite('deriveNodePathFromIFlow', () => {
+  let tempDir: string;
+
+  setup(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iflow-node-derive-test-'));
+  });
+
+  teardown(() => {
+    try {
+      if (fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  test('prefers node alongside iflow executable', async () => {
+    const binDir = path.join(tempDir, 'bin');
+    const iflowPath = path.join(binDir, 'iflow');
+    const nodePath = path.join(binDir, process.platform === 'win32' ? 'node.exe' : 'node');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(iflowPath, '#!/usr/bin/env node');
+    fs.writeFileSync(nodePath, '');
+
+    const result = await deriveNodePathFromIFlow(iflowPath, () => {});
+    assert.strictEqual(result, nodePath);
+  });
+
+  test('infers node path from resolved script under lib/node_modules', async () => {
+    const versionRoot = path.join(tempDir, 'nvm', 'versions', 'node', 'v22.0.0');
+    const binDir = path.join(versionRoot, 'bin');
+    const libDir = path.join(versionRoot, 'lib', 'node_modules', '@iflow-ai', 'iflow-cli', 'bundle');
+    const nodePath = path.join(binDir, process.platform === 'win32' ? 'node.exe' : 'node');
+    const scriptPath = path.join(libDir, 'entry.js');
+    const iflowPath = path.join(tempDir, 'shim', 'iflow');
+
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.mkdirSync(libDir, { recursive: true });
+    fs.mkdirSync(path.dirname(iflowPath), { recursive: true });
+    fs.writeFileSync(nodePath, '');
+    fs.writeFileSync(scriptPath, '// entry');
+    fs.writeFileSync(iflowPath, '#!/usr/bin/env node');
+
+    const result = await deriveNodePathFromIFlow(iflowPath, () => {}, scriptPath);
+    assert.strictEqual(result, nodePath);
   });
 });

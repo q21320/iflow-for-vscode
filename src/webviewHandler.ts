@@ -2,7 +2,6 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ConversationStore } from './store';
 import { AcpClient } from './acpClient';
-import { AuthService } from './authService';
 import { WebviewMessage, ExtensionMessage, AttachedFile, IDEContext } from './protocol';
 import { CliStatusService } from './webview/cliStatusService';
 import { PlanModeOrchestrator } from './webview/planModeOrchestrator';
@@ -12,7 +11,6 @@ import { buildWebviewHtml } from './webview/htmlTemplate';
 import { routeWebviewMessage } from './webview/messageRouter';
 import { WorkspaceFileService } from './webview/workspaceFileService';
 import { IDEContextSyncService } from './webview/ideContextSyncService';
-import { AuthCommandHandler } from './webview/authCommandHandler';
 import { FileChangeReviewService } from './webview/fileChangeReviewService';
 import { toAppError } from './errorUtils';
 import {
@@ -77,8 +75,6 @@ function createDefaultDeps(): WebviewHandlerDeps {
 export class WebviewHandler {
   private readonly store: ConversationStore;
   private readonly client: AcpClient;
-  private readonly authService: AuthService;
-  private readonly authCommandHandler: AuthCommandHandler;
   private readonly cliStatusService: CliStatusService;
   private readonly planApprovalCoordinator: PlanApprovalCoordinator;
   private readonly sendMessagePipeline: SendMessagePipeline;
@@ -95,13 +91,12 @@ export class WebviewHandler {
   constructor(
     extensionUri: vscode.Uri,
     globalState: vscode.Memento,
-    secrets: vscode.SecretStorage,
+    _secrets: vscode.SecretStorage,
     deps: Partial<WebviewHandlerDeps> = {},
   ) {
     this.extensionUri = extensionUri;
     this.deps = { ...createDefaultDeps(), ...deps };
     this.client = new AcpClient();
-    this.authService = new AuthService(secrets);
     this.store = new ConversationStore(globalState, (state) => {
       this.postMessage({ type: 'stateUpdated', state });
     });
@@ -123,11 +118,6 @@ export class WebviewHandler {
       registerTextDocumentContentProvider: (scheme, provider) =>
         this.deps.registerTextDocumentContentProvider(scheme, provider),
       log: (message) => this.debug(message),
-    });
-    this.authCommandHandler = new AuthCommandHandler(this.authService, {
-      showInformationMessage: (message) => this.deps.showInformationMessage(message),
-      showErrorMessage: (message) => this.deps.showErrorMessage(message),
-      debug: (message) => this.debug(message),
     });
 
     this.cliStatusService = new CliStatusService(
@@ -189,7 +179,8 @@ export class WebviewHandler {
             e.affectsConfiguration('iflow.port') ||
             e.affectsConfiguration('iflow.timeout') ||
             e.affectsConfiguration('iflow.enableCliStream')) {
-          await this.client.dispose();
+          await this.client.resetConnection();
+          this.client.clearAutoDetectCache();
           CliStatusService.invalidateSharedCliCheck();
           await this.checkCliAvailability(true);
         }
@@ -237,7 +228,7 @@ export class WebviewHandler {
           this.ideContextSyncService.push(IDE_CONTEXT_MAX_SELECTION_CHARS);
         },
         recheckCli: async () => {
-          await this.client.dispose();
+          await this.client.resetConnection();
           this.client.clearAutoDetectCache();
           CliStatusService.invalidateSharedCliCheck();
           await this.checkCliAvailability(true);
@@ -315,7 +306,6 @@ export class WebviewHandler {
           this.store.endAssistantMessage();
           this.planApprovalCoordinator.cancelWait();
         },
-        startAuth: async () => this.authCommandHandler.startAuth(),
       }, (unknownType) => {
         this.debug(`Unhandled webview message type: ${unknownType}`);
       });
@@ -397,7 +387,6 @@ export class WebviewHandler {
     this.disposeListeners();
     await this.client.dispose();
     this.fileChangeReviewService.dispose();
-    this.authService.dispose();
     this.debug('WebviewHandler disposed');
     this.outputChannel?.dispose();
     this.outputChannel = null;

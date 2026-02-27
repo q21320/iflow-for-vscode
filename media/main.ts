@@ -3,18 +3,21 @@
 
 import type {
   Conversation,
-  ConversationState,
   WebviewMessage,
   ExtensionMessage,
   IDEContext,
-  RoundFileChangeSummary,
 } from '../src/protocol';
-import { formatStreamStatusText, StreamStatusSnapshot } from '../src/streamStatusUtils';
+import { formatStreamStatusText } from '../src/streamStatusUtils';
 import { escapeHtml } from './markdownRenderer';
 import { SlashMenuController } from './slashMenuController';
 import { InputController } from './inputController';
 import { AppMessageRouter } from './appMessageRouter';
-import { TEXTAREA_MIN_HEIGHT, TEXTAREA_MAX_HEIGHT, COMPOSER_MIN_INSET, COMPOSER_INSET_PADDING } from './webviewUtils';
+import {
+  TEXTAREA_MIN_HEIGHT,
+  TEXTAREA_MAX_HEIGHT,
+  COMPOSER_MIN_INSET,
+  COMPOSER_INSET_PADDING,
+} from './webviewUtils';
 import {
   renderTopBar,
   renderConversationPanel,
@@ -41,6 +44,8 @@ import {
   updateStreamingContentView,
 } from './streamingViewUpdater';
 import { VisualUpdateScheduler } from '../src/shared/visualUpdateScheduler';
+import { AppState } from './appState';
+import { AppLifecycle } from './appLifecycle';
 
 interface VsCodeApi {
   postMessage(message: WebviewMessage): void;
@@ -50,31 +55,16 @@ interface VsCodeApi {
 
 declare function acquireVsCodeApi(): VsCodeApi;
 
-// Main app class
 class IFlowApp implements AppHost {
-  private vscode: VsCodeApi;
-  private state: ConversationState | null = null;
+  private readonly vscode: VsCodeApi;
+  private readonly appState = new AppState();
   private slashMenu!: SlashMenuController;
   private inputCtrl!: InputController;
-  private faviconUri: string;
+  private readonly faviconUri: string;
   private readonly messageRouter: AppMessageRouter;
-
-  private composerResizeObserver: ResizeObserver | null = null;
-  private pendingConfirmation: PendingConfirmation | null = null;
-  private pendingQuestion: PendingQuestion | null = null;
-  private pendingPlanApproval: PendingPlanApproval | null = null;
-  private streamStatus: StreamStatusSnapshot | null = null;
-  private clearInputOnNextRender = false;
-  private ideContext: IDEContext = { activeFile: null, selection: null };
-  private ideContextDismissed = { activeFile: false, selection: false };
-  private latestRoundChangesByConversationId = new Map<string, RoundFileChangeSummary>();
   private readonly visualUpdateScheduler: VisualUpdateScheduler;
   private readonly renderDriver: WebviewRenderDriver;
-
-  // AppHost public state (accessed by event binders)
-  showConversationPanel = false;
-  conversationSearch = '';
-  showModeMenu = false;
+  private readonly lifecycle = new AppLifecycle();
 
   constructor() {
     this.vscode = acquireVsCodeApi();
@@ -88,59 +78,62 @@ class IFlowApp implements AppHost {
         onPendingIndicatorUpdate: () => this.applyPendingIndicatorUpdate(),
       },
     );
+
     this.inputCtrl = new InputController({
       postMessage: (msg) => this.vscode.postMessage(msg),
       getInputElement: () => document.getElementById('message-input') as HTMLTextAreaElement | null,
       onAttachedFilesChanged: () => {
         attachFileOpenListeners((msg) => this.vscode.postMessage(msg));
         this.syncMessagesBottomInset();
-      }
+      },
     });
+
     this.slashMenu = new SlashMenuController({
       postMessage: (msg) => this.vscode.postMessage(msg),
       getCurrentConversation: () => this.getCurrentConversation(),
       getInputElement: () => document.getElementById('message-input') as HTMLTextAreaElement | null,
       onSlashMenuClosed: () => {
-        this.clearInputOnNextRender = true;
+        this.appState.clearInputOnNextRender = true;
         this.render();
       },
-      getWorkspaceFolders: () => this.state?.workspaceFolders ?? [],
-      isMultiRoot: () => this.state?.isMultiRoot ?? false
+      getWorkspaceFolders: () => this.appState.state?.workspaceFolders ?? [],
+      isMultiRoot: () => this.appState.state?.isMultiRoot ?? false,
     });
+
     this.messageRouter = new AppMessageRouter({
-      getState: () => this.state,
+      getState: () => this.appState.state,
       setState: (state) => {
-        this.state = state;
+        this.appState.state = state;
       },
-      getStreamStatus: () => this.streamStatus,
+      getStreamStatus: () => this.appState.streamStatus,
       setStreamStatus: (status) => {
-        this.streamStatus = status;
+        this.appState.streamStatus = status;
       },
-      getIDEContext: () => this.ideContext,
+      getIDEContext: () => this.appState.ideContext,
       setIDEContext: (context) => {
-        this.ideContext = context;
+        this.appState.ideContext = context;
       },
-      getIDEContextDismissed: () => ({ ...this.ideContextDismissed }),
+      getIDEContextDismissed: () => ({ ...this.appState.ideContextDismissed }),
       setIDEContextDismissed: (dismissed) => {
-        this.ideContextDismissed = dismissed;
+        this.appState.ideContextDismissed = dismissed;
       },
-      getLatestRoundChangesByConversationId: () => this.latestRoundChangesByConversationId,
+      getLatestRoundChangesByConversationId: () => this.appState.latestRoundChangesByConversationId,
       setLatestRoundChangesByConversationId: (value) => {
-        this.latestRoundChangesByConversationId = value;
+        this.appState.latestRoundChangesByConversationId = value;
       },
       setPendingConfirmation: (value) => {
-        this.pendingConfirmation = value;
+        this.appState.pendingConfirmation = value;
       },
       setPendingQuestion: (value) => {
-        this.pendingQuestion = value;
+        this.appState.pendingQuestion = value;
       },
       setPendingPlanApproval: (value) => {
-        this.pendingPlanApproval = value;
+        this.appState.pendingPlanApproval = value;
       },
       inputCtrl: this.inputCtrl,
       render: (conversationChanged = false) => {
         if (conversationChanged) {
-          this.clearInputOnNextRender = true;
+          this.appState.clearInputOnNextRender = true;
         }
         this.render(conversationChanged);
       },
@@ -148,66 +141,82 @@ class IFlowApp implements AppHost {
       updatePendingIndicator: () => this.schedulePendingIndicatorUpdate(),
       updateIDEContextChips: () => this.updateIDEContextChips(),
     });
-    this.setupMessageHandler();
-    this.setupDocumentClickHandler();
+
+    this.lifecycle.setupMessageHandler((message) => this.handleMessage(message));
+    this.lifecycle.setupDocumentClickHandler((target) => {
+      closePanelsOnOutsideClick(this, target);
+    });
+
     this.render();
     this.vscode.postMessage({ type: 'ready' });
   }
 
-  // ── AppHost implementation ─────────────────────────────────────────
+  get showConversationPanel(): boolean {
+    return this.appState.showConversationPanel;
+  }
+
+  set showConversationPanel(value: boolean) {
+    this.appState.showConversationPanel = value;
+  }
+
+  get conversationSearch(): string {
+    return this.appState.conversationSearch;
+  }
+
+  set conversationSearch(value: string) {
+    this.appState.conversationSearch = value;
+  }
+
+  get showModeMenu(): boolean {
+    return this.appState.showModeMenu;
+  }
+
+  set showModeMenu(value: boolean) {
+    this.appState.showModeMenu = value;
+  }
 
   postMessage(msg: WebviewMessage): void {
     this.vscode.postMessage(msg);
   }
 
   getConversations(): Conversation[] {
-    return this.state?.conversations || [];
+    return this.appState.getConversations();
   }
 
   getCurrentConversationId(): string | null {
-    return this.state?.currentConversationId ?? null;
+    return this.appState.getCurrentConversationId();
   }
 
   getCurrentConversation(): Conversation | null {
-    if (!this.state?.currentConversationId) return null;
-    return this.state.conversations.find(c => c.id === this.state?.currentConversationId) || null;
-  }
-
-  private getWorkspaceFolderName(conversation: Conversation | null): string | undefined {
-    if (!conversation?.workspaceFolderUri || !this.state?.workspaceFolders) {
-      return undefined;
-    }
-    return this.state.workspaceFolders.find(
-      f => f.uri === conversation.workspaceFolderUri
-    )?.name;
+    return this.appState.getCurrentConversation();
   }
 
   getPendingConfirmation(): PendingConfirmation | null {
-    return this.pendingConfirmation;
+    return this.appState.pendingConfirmation;
   }
 
   clearPendingConfirmation(): void {
-    this.pendingConfirmation = null;
+    this.appState.pendingConfirmation = null;
   }
 
   getPendingQuestion(): PendingQuestion | null {
-    return this.pendingQuestion;
+    return this.appState.pendingQuestion;
   }
 
   clearPendingQuestion(): void {
-    this.pendingQuestion = null;
+    this.appState.pendingQuestion = null;
   }
 
   getPendingPlanApproval(): PendingPlanApproval | null {
-    return this.pendingPlanApproval;
+    return this.appState.pendingPlanApproval;
   }
 
   clearPendingPlanApproval(): void {
-    this.pendingPlanApproval = null;
+    this.appState.pendingPlanApproval = null;
   }
 
   dismissIDEContext(type: 'activeFile' | 'selection'): void {
-    this.ideContextDismissed = { ...this.ideContextDismissed, [type]: true };
+    this.appState.ideContextDismissed = { ...this.appState.ideContextDismissed, [type]: true };
   }
 
   autoSizeSelect(select: HTMLSelectElement): void {
@@ -217,21 +226,23 @@ class IFlowApp implements AppHost {
     span.style.cssText = 'position:absolute;visibility:hidden;font-size:inherit;font-family:inherit;white-space:nowrap;';
     select.parentElement?.appendChild(span);
     span.textContent = option.text;
-    select.style.width = (span.offsetWidth + 24) + 'px';
+    select.style.width = `${span.offsetWidth + 24}px`;
     span.remove();
   }
 
   handleInputChange(input: HTMLTextAreaElement): void {
     const value = input.value;
     const cursorPos = input.selectionStart;
-    if (this.slashMenu.handleInput(value)) { return; }
+    if (this.slashMenu.handleInput(value)) {
+      return;
+    }
     this.inputCtrl.handleInput(value, cursorPos);
   }
 
   autoResizeTextarea(textarea: HTMLTextAreaElement): void {
     textarea.style.height = `${TEXTAREA_MIN_HEIGHT}px`;
     if (textarea.scrollHeight > TEXTAREA_MIN_HEIGHT) {
-      textarea.style.height = Math.min(textarea.scrollHeight, TEXTAREA_MAX_HEIGHT) + 'px';
+      textarea.style.height = `${Math.min(textarea.scrollHeight, TEXTAREA_MAX_HEIGHT)}px`;
     }
     this.syncMessagesBottomInset();
   }
@@ -252,22 +263,20 @@ class IFlowApp implements AppHost {
     const input = document.getElementById('message-input') as HTMLTextAreaElement;
     const content = input?.value.trim() || '';
 
-    if (!this.inputCtrl.canSend(content)) { return; }
+    if (!this.inputCtrl.canSend(content)) {
+      return;
+    }
 
     const attachedFiles = this.inputCtrl.consumeAttachedFiles();
-
-    // Build effective IDE context excluding dismissed items
     const ideContext: IDEContext = {
-      activeFile: this.ideContextDismissed.activeFile ? null : this.ideContext.activeFile,
-      selection: this.ideContextDismissed.selection ? null : this.ideContext.selection,
+      activeFile: this.appState.ideContextDismissed.activeFile ? null : this.appState.ideContext.activeFile,
+      selection: this.appState.ideContextDismissed.selection ? null : this.appState.ideContext.selection,
     };
     const hasContext = ideContext.activeFile !== null || ideContext.selection !== null;
-    const conversationId = this.state?.currentConversationId;
+    const conversationId = this.appState.state?.currentConversationId;
 
-    if (conversationId && this.latestRoundChangesByConversationId.has(conversationId)) {
-      const next = new Map(this.latestRoundChangesByConversationId);
-      next.delete(conversationId);
-      this.latestRoundChangesByConversationId = next;
+    if (conversationId) {
+      this.appState.clearRoundChangesForConversation(conversationId);
       document.querySelector('.round-file-changes-card')?.remove();
     }
 
@@ -275,81 +284,63 @@ class IFlowApp implements AppHost {
       type: 'sendMessage',
       content,
       attachedFiles,
-      ...(hasContext ? { ideContext } : {})
+      ...(hasContext ? { ideContext } : {}),
     });
 
-    // Clear input
     if (input) {
       input.value = '';
       this.autoResizeTextarea(input);
     }
   }
 
-  // ── Message handling ───────────────────────────────────────────────
-
-  private setupMessageHandler(): void {
-    window.addEventListener('message', (event) => {
-      this.handleMessage(event.data as ExtensionMessage);
-    });
-  }
-
-  /** Single document-level click handler (registered once, not per-render). */
-  private setupDocumentClickHandler(): void {
-    document.addEventListener('click', (e) => {
-      closePanelsOnOutsideClick(this, e.target);
-    });
-  }
-
   private handleMessage(message: ExtensionMessage): void {
     this.messageRouter.handle(message);
   }
 
-  // ── Rendering orchestration ────────────────────────────────────────
-
   render(smoothScrollToBottom = false): void {
     const app = document.getElementById('app');
-    if (!app) return;
+    if (!app) {
+      return;
+    }
 
     this.visualUpdateScheduler.cancelAll();
 
-    const clearInput = this.clearInputOnNextRender;
-    this.clearInputOnNextRender = false;
-
+    const clearInput = this.appState.consumeClearInputOnNextRender();
     const conversation = this.getCurrentConversation();
     const roundFileChanges = conversation
-      ? this.latestRoundChangesByConversationId.get(conversation.id)
+      ? this.appState.latestRoundChangesByConversationId.get(conversation.id)
       : undefined;
     const title = conversation ? escapeHtml(conversation.title) : 'No conversations';
     const conversationPanelHtml = renderConversationPanel({
-      conversations: this.state?.conversations || [],
-      search: this.conversationSearch,
-      showPanel: this.showConversationPanel,
-      currentConversationId: this.state?.currentConversationId ?? null
+      conversations: this.appState.state?.conversations || [],
+      search: this.appState.conversationSearch,
+      showPanel: this.appState.showConversationPanel,
+      currentConversationId: this.appState.state?.currentConversationId ?? null,
     });
 
     const html = `
       <div class="container">
-        ${renderTopBar(title, conversationPanelHtml, this.showConversationPanel)}
+        ${renderTopBar(title, conversationPanelHtml, this.appState.showConversationPanel)}
         ${renderMessages(
           conversation,
-          this.state?.isStreaming ?? false,
+          this.appState.state?.isStreaming ?? false,
           this.faviconUri,
           this.getPendingIndicatorText(),
         )}
         ${renderComposer({
           conversation,
-          isStreaming: this.state?.isStreaming ?? false,
-          pendingConfirmation: this.pendingConfirmation,
-          pendingQuestion: this.pendingQuestion,
-          pendingPlanApproval: this.pendingPlanApproval,
-          ideContextChipsHtml: renderIDEContextChips(this.ideContext, this.ideContextDismissed),
+          isStreaming: this.appState.state?.isStreaming ?? false,
+          pendingConfirmation: this.appState.pendingConfirmation,
+          pendingQuestion: this.appState.pendingQuestion,
+          pendingPlanApproval: this.appState.pendingPlanApproval,
+          ideContextChipsHtml: renderIDEContextChips(this.appState.ideContext, this.appState.ideContextDismissed),
           attachedFilesHtml: this.inputCtrl.renderAttachedFilesHtml(),
           slashMenuHtml: this.slashMenu.isVisible ? this.slashMenu.renderHtml() : '',
           mentionMenuHtml: this.inputCtrl.isMentionVisible ? this.inputCtrl.renderMentionMenuHtml() : '',
-          contextUsage: this.state?.contextUsage,
-          showModeMenu: this.showModeMenu,
-          workspaceFolderName: this.getWorkspaceFolderName(conversation),
-          isMultiRoot: this.state?.isMultiRoot ?? false,
+          contextUsage: this.appState.state?.contextUsage,
+          showModeMenu: this.appState.showModeMenu,
+          workspaceFolderName: this.appState.getWorkspaceFolderName(conversation),
+          isMultiRoot: this.appState.state?.isMultiRoot ?? false,
           roundFileChanges,
         })}
       </div>
@@ -381,10 +372,6 @@ class IFlowApp implements AppHost {
     });
   }
 
-  /**
-   * Incremental update during streaming: only update the last assistant message
-   * and the pending indicator, avoiding a full DOM rebuild.
-   */
   private scheduleStreamingContentUpdate(): void {
     this.visualUpdateScheduler.scheduleStreamingUpdate();
   }
@@ -399,13 +386,10 @@ class IFlowApp implements AppHost {
     });
   }
 
-  /**
-   * Incrementally update IDE context chips without a full DOM rebuild.
-   */
   private updateIDEContextChips(): void {
     updateIDEContextChipsView({
-      ideContext: this.ideContext,
-      ideContextDismissed: this.ideContextDismissed,
+      ideContext: this.appState.ideContext,
+      ideContextDismissed: this.appState.ideContextDismissed,
       onAfterPatch: () => {
         attachIDEContextListeners(this);
         this.syncMessagesBottomInset();
@@ -413,15 +397,10 @@ class IFlowApp implements AppHost {
     });
   }
 
-  /**
-   * Incrementally patch composer status bar elements (mode label, thinking chip,
-   * model select, mode popup active states) without a full DOM rebuild.
-   * Existing event listeners remain intact since we only mutate text/attributes.
-   */
   private updateComposerStatusBar(): void {
     updateComposerStatusBarView({
       conversation: this.getCurrentConversation(),
-      showModeMenu: this.showModeMenu,
+      showModeMenu: this.appState.showModeMenu,
       autoSizeSelect: (select) => this.autoSizeSelect(select),
     });
   }
@@ -433,37 +412,18 @@ class IFlowApp implements AppHost {
   private applyPendingIndicatorUpdate(container?: Element): void {
     updatePendingIndicatorView({
       container,
-      isStreaming: this.state?.isStreaming ?? false,
+      isStreaming: this.appState.state?.isStreaming ?? false,
       faviconUri: this.faviconUri,
       pendingStatusText: this.getPendingIndicatorText(),
     });
   }
 
   private getPendingIndicatorText(): string {
-    return formatStreamStatusText(this.streamStatus);
+    return formatStreamStatusText(this.appState.streamStatus);
   }
 
-  // ── Layout helpers ─────────────────────────────────────────────────
-
   private setupComposerLayoutObserver(): void {
-    this.composerResizeObserver?.disconnect();
-    this.composerResizeObserver = null;
-
-    const composer = document.querySelector('.composer') as HTMLElement | null;
-    if (!composer) {
-      return;
-    }
-
-    if (typeof ResizeObserver === 'undefined') {
-      this.syncMessagesBottomInset();
-      return;
-    }
-
-    this.composerResizeObserver = new ResizeObserver(() => {
-      this.syncMessagesBottomInset();
-    });
-    this.composerResizeObserver.observe(composer);
-    this.syncMessagesBottomInset();
+    this.lifecycle.setupComposerLayoutObserver(() => this.syncMessagesBottomInset());
   }
 
   private syncMessagesBottomInset(): void {
@@ -482,21 +442,19 @@ class IFlowApp implements AppHost {
     if (container) {
       container.scrollTo({
         top: container.scrollHeight,
-        behavior: smooth ? 'smooth' : 'auto'
+        behavior: smooth ? 'smooth' : 'auto',
       });
     }
   }
 
   dispose(): void {
     this.visualUpdateScheduler.cancelAll();
-    this.composerResizeObserver?.disconnect();
-    this.composerResizeObserver = null;
+    this.lifecycle.dispose();
     this.slashMenu.dispose();
     this.inputCtrl.dispose();
   }
 }
 
-// Initialize app when DOM is ready (guard against double init)
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => new IFlowApp());
 } else {

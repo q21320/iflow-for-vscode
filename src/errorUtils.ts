@@ -1,4 +1,12 @@
-export type AppErrorCode = 'UNKNOWN' | 'MISSING_SESSION' | 'CLI_UNAVAILABLE';
+export type AppErrorCode =
+  | 'UNKNOWN'
+  | 'MISSING_SESSION'
+  | 'CLI_UNAVAILABLE'
+  | 'VALIDATION_FAILED'
+  | 'JSON_RPC_ERROR'
+  | 'IO_ERROR'
+  | 'SECURITY_DENIED'
+  | 'TIMEOUT';
 
 export interface AppErrorOptions {
   code?: AppErrorCode;
@@ -68,6 +76,38 @@ export function classifyAppErrorCode(value: unknown): AppErrorCode {
     || normalized.includes('not available')
     || normalized.includes('cli not found')) {
     return 'CLI_UNAVAILABLE';
+  }
+
+  if (normalized.includes('json-rpc') || normalized.includes('json rpc')) {
+    return 'JSON_RPC_ERROR';
+  }
+
+  if (normalized.includes('validation')
+    || normalized.includes('invalid request')
+    || normalized.includes('invalid params')
+    || normalized.includes('schema')) {
+    return 'VALIDATION_FAILED';
+  }
+
+  if (normalized.includes('timed out')
+    || normalized.includes('timeout')
+    || normalized.includes('etimedout')) {
+    return 'TIMEOUT';
+  }
+
+  if (normalized.includes('access denied')
+    || normalized.includes('outside allowed')
+    || normalized.includes('security')) {
+    return 'SECURITY_DENIED';
+  }
+
+  if (normalized.includes('enoent')
+    || normalized.includes('eacces')
+    || normalized.includes('eperm')
+    || normalized.includes('io error')
+    || normalized.includes('failed to read')
+    || normalized.includes('failed to write')) {
+    return 'IO_ERROR';
   }
 
   return 'UNKNOWN';

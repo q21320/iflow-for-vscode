@@ -23,6 +23,7 @@ interface SessionCoordinatorDependencies {
   createProtocol: (transport: AcpTransport) => AcpProtocol;
   getProcessManager: () => ProcessManagerLike;
   getConfig: <T>(key: string, defaultValue: T) => T;
+  resolveAuthMethodOrder?: (availableMethodIds: string[]) => string[];
   runtimeConfigApplier: RuntimeConfigApplier;
   interactionBridge: InteractionBridge;
   log: (message: string) => void;
@@ -103,6 +104,24 @@ export class SessionCoordinator {
     if (this.protocol && this.snapshot.status === 'ready' && this.snapshot.sessionId) {
       await this.protocol.sendRequest('session/cancel', { sessionId: this.snapshot.sessionId });
     }
+  }
+
+  /**
+   * Tear down the current transport/process and return to a reusable disconnected state.
+   * Unlike dispose(), this keeps the coordinator reusable for future ensureConnected() calls.
+   */
+  async reset(): Promise<void> {
+    if (this.snapshot.status === 'disposed') {
+      return;
+    }
+    this.deps.interactionBridge.clearPendingInteractions();
+    await this.teardownConnection(true);
+    this.updateSnapshot(
+      {
+        ...INITIAL_CONNECTION_SNAPSHOT,
+      },
+      'dispose',
+    );
   }
 
   async dispose(): Promise<void> {
@@ -210,12 +229,36 @@ export class SessionCoordinator {
             writeTextFile: true,
           },
         },
-      }) as { isAuthenticated?: boolean };
+      }) as {
+        isAuthenticated?: boolean;
+        authMethods?: Array<{ id?: string }>;
+      };
 
       if (!initResult.isAuthenticated) {
-        await protocol.sendRequest('authenticate', {
-          methodId: 'iflow',
-        });
+        const availableMethodIds = this.extractAuthMethodIds(initResult.authMethods);
+        const authMethodOrder = this.resolveAuthMethodOrder(availableMethodIds);
+        let lastAuthError: Error | null = null;
+        let authenticated = false;
+
+        for (const methodId of authMethodOrder) {
+          try {
+            await protocol.sendRequest('authenticate', { methodId });
+            this.deps.log(`ACP authenticate succeeded: methodId=${methodId}`);
+            authenticated = true;
+            break;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            lastAuthError = error instanceof Error ? error : new Error(message);
+            this.deps.log(`ACP authenticate failed: methodId=${methodId}, error=${message}`);
+          }
+        }
+
+        if (!authenticated) {
+          if (lastAuthError) {
+            throw lastAuthError;
+          }
+          throw new Error('ACP authentication failed: no supported auth methods');
+        }
       }
 
       const cwd = options.cwd ?? process.cwd();
@@ -336,6 +379,54 @@ export class SessionCoordinator {
       },
       'ready',
     );
+  }
+
+  private extractAuthMethodIds(authMethods: Array<{ id?: string }> | undefined): string[] {
+    if (!Array.isArray(authMethods)) {
+      return [];
+    }
+
+    const methodIds: string[] = [];
+    const seen = new Set<string>();
+    for (const method of authMethods) {
+      if (!method || typeof method.id !== 'string') {
+        continue;
+      }
+      const id = method.id.trim();
+      if (!id || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      methodIds.push(id);
+    }
+    return methodIds;
+  }
+
+  private resolveAuthMethodOrder(availableMethodIds: string[]): string[] {
+    const preferred = this.deps.resolveAuthMethodOrder?.(availableMethodIds) ?? [];
+    const fallbackDefaults = ['oauth-iflow', 'iflow', 'openai-compatible'];
+    const requested = [...preferred, ...fallbackDefaults, ...availableMethodIds];
+
+    const availableSet = new Set(availableMethodIds);
+    const order: string[] = [];
+    const seen = new Set<string>();
+
+    for (const methodId of requested) {
+      if (!methodId || seen.has(methodId)) {
+        continue;
+      }
+      if (availableSet.size > 0 && !availableSet.has(methodId)) {
+        continue;
+      }
+      seen.add(methodId);
+      order.push(methodId);
+    }
+
+    if (order.length > 0) {
+      return order;
+    }
+
+    return availableMethodIds.length > 0 ? [...availableMethodIds] : ['iflow'];
   }
 
   private handleTransportClosed(error?: Error): void {

@@ -6,6 +6,21 @@ import { ModelType } from '../protocol';
 export class SettingsRepository {
   constructor(private readonly log: (message: string) => void) {}
 
+  getSelectedAuthType(): string | null {
+    try {
+      const { settings } = this.readSettings();
+      const selectedAuthType = settings.selectedAuthType;
+      if (typeof selectedAuthType !== 'string') {
+        return null;
+      }
+      const normalized = selectedAuthType.trim();
+      return normalized.length > 0 ? normalized : null;
+    } catch (err: unknown) {
+      this.log(`Failed to read selected auth type: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   updateModel(model: ModelType): void {
     try {
       const { settings, path: settingsPath } = this.readSettings();

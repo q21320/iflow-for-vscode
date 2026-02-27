@@ -42,6 +42,10 @@ class FakeProtocol {
   started = false;
   disposed = false;
   failOnMethod: string | null = null;
+  failAuthMethodId: string | null = null;
+  initializeResult: { isAuthenticated?: boolean; authMethods?: Array<{ id?: string }> } = {
+    isAuthenticated: false,
+  };
 
   async sendRequest(method: string, params?: unknown): Promise<unknown> {
     this.requests.push({ method, params });
@@ -52,8 +56,14 @@ class FakeProtocol {
 
     switch (method) {
       case 'initialize':
-        return { isAuthenticated: false };
+        return this.initializeResult;
       case 'authenticate':
+        if (
+          this.failAuthMethodId
+          && (params as { methodId?: string } | undefined)?.methodId === this.failAuthMethodId
+        ) {
+          throw new Error(`forced failure on authenticate:${this.failAuthMethodId}`);
+        }
         return { ok: true };
       case 'session/new':
         return { sessionId: 'session-new-1' };
@@ -294,6 +304,76 @@ suite('SessionCoordinator', () => {
     assert.strictEqual(coordinator.currentCwd, '/tmp/workspace-b');
   });
 
+  test('reset returns to disconnected state and allows reconnect', async () => {
+    const transportA = new FakeTransport();
+    const transportB = new FakeTransport();
+    const protocolA = new FakeProtocol();
+    const protocolB = new FakeProtocol();
+    let createTransportCalls = 0;
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => {
+        createTransportCalls += 1;
+        return createTransportCalls === 1 ? transportA as never : transportB as never;
+      },
+      createProtocol: () => (createTransportCalls === 1 ? protocolA : protocolB) as never,
+      getProcessManager: () => ({
+        hasProcess: true,
+        currentPort: null,
+        stopManagedProcess: () => {},
+        resolveStartMode: async () => null,
+        startManagedProcess: async () => 8090,
+      }),
+      getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions({ cwd: '/tmp/workspace-a' }));
+    await coordinator.reset();
+
+    assert.strictEqual(coordinator.connectionSnapshot.status, 'disconnected');
+    assert.strictEqual(coordinator.currentSessionId, null);
+    assert.strictEqual(coordinator.currentIsConnected, false);
+
+    await coordinator.ensureConnected(baseRunOptions({ cwd: '/tmp/workspace-b' }));
+
+    assert.strictEqual(coordinator.connectionSnapshot.status, 'ready');
+    assert.strictEqual(coordinator.currentCwd, '/tmp/workspace-b');
+    assert.strictEqual(createTransportCalls, 2);
+  });
+
+  test('dispose is terminal and blocks reconnect', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => ({
+        hasProcess: true,
+        currentPort: null,
+        stopManagedProcess: () => {},
+        resolveStartMode: async () => null,
+        startManagedProcess: async () => 8090,
+      }),
+      getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions());
+    await coordinator.dispose();
+
+    assert.strictEqual(coordinator.connectionSnapshot.status, 'disposed');
+    await assert.rejects(
+      coordinator.ensureConnected(baseRunOptions()),
+      /Session coordinator is disposed/,
+    );
+  });
+
   test('reuses connection when cwd differs only by trailing separator', async () => {
     const transport = new FakeTransport();
     const protocol = new FakeProtocol();
@@ -443,5 +523,78 @@ suite('SessionCoordinator', () => {
     await coordinator.ensureConnected(baseRunOptions());
     assert.strictEqual(startCalls.length, 1);
     assert.strictEqual(startCalls[0].enableStream, false);
+  });
+
+  test('prefers oauth-iflow over iflow when both auth methods are available', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+    protocol.initializeResult = {
+      isAuthenticated: false,
+      authMethods: [{ id: 'iflow' }, { id: 'oauth-iflow' }],
+    };
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => ({
+        hasProcess: true,
+        currentPort: null,
+        stopManagedProcess: () => {},
+        resolveStartMode: async () => null,
+        startManagedProcess: async () => 8090,
+      }),
+      getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions());
+
+    const authenticate = protocol.requests.find((request) => request.method === 'authenticate');
+    assert.ok(authenticate);
+    assert.strictEqual(
+      (authenticate?.params as { methodId?: string } | undefined)?.methodId,
+      'oauth-iflow',
+    );
+  });
+
+  test('falls back to next auth method when preferred method fails', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+    protocol.initializeResult = {
+      isAuthenticated: false,
+      authMethods: [{ id: 'oauth-iflow' }, { id: 'iflow' }],
+    };
+    protocol.failAuthMethodId = 'oauth-iflow';
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => ({
+        hasProcess: true,
+        currentPort: null,
+        stopManagedProcess: () => {},
+        resolveStartMode: async () => null,
+        startManagedProcess: async () => 8090,
+      }),
+      getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions());
+
+    const authenticateRequests = protocol.requests.filter((request) => request.method === 'authenticate');
+    assert.strictEqual(authenticateRequests.length, 2);
+    assert.strictEqual(
+      (authenticateRequests[0]?.params as { methodId?: string } | undefined)?.methodId,
+      'oauth-iflow',
+    );
+    assert.strictEqual(
+      (authenticateRequests[1]?.params as { methodId?: string } | undefined)?.methodId,
+      'iflow',
+    );
   });
 });

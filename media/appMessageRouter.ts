@@ -27,6 +27,10 @@ interface AppMessageRouterDeps {
 }
 
 export class AppMessageRouter {
+  private hasPendingConfirmation = false;
+  private hasPendingQuestion = false;
+  private hasPendingPlanApproval = false;
+
   constructor(private readonly deps: AppMessageRouterDeps) {}
 
   handle(message: ExtensionMessage): void {
@@ -44,6 +48,10 @@ export class AppMessageRouter {
 
         const conversationChanged = previousConversationId !== (message.state.currentConversationId ?? null);
         if (message.state.isStreaming && wasStreaming) {
+          this.deps.updateStreamingContent();
+        } else if (!message.state.isStreaming && wasStreaming && !conversationChanged) {
+          // Streaming just ended for the same conversation: patch in place to avoid
+          // a full DOM rebuild/flicker at turn end.
           this.deps.updateStreamingContent();
         } else {
           this.deps.render(conversationChanged);
@@ -65,8 +73,13 @@ export class AppMessageRouter {
         break;
 
       case 'roundFileChanges': {
-        const next = new Map(this.deps.getLatestRoundChangesByConversationId());
+        const previous = this.deps.getLatestRoundChangesByConversationId();
+        const hadSummary = previous.has(message.summary.conversationId);
+        const next = new Map(previous);
         if (message.summary.changedFiles.length === 0) {
+          if (!hadSummary) {
+            break;
+          }
           next.delete(message.summary.conversationId);
         } else {
           next.set(message.summary.conversationId, message.summary);
@@ -80,6 +93,7 @@ export class AppMessageRouter {
       case 'streamChunk':
         this.deps.setStreamStatus(reduceStreamStatus(this.deps.getStreamStatus(), { type: 'streamChunk' }));
         if (message.chunk.chunkType === 'tool_confirmation') {
+          this.hasPendingConfirmation = true;
           this.deps.setPendingConfirmation({
             requestId: message.chunk.requestId,
             toolName: message.chunk.toolName,
@@ -87,12 +101,14 @@ export class AppMessageRouter {
           });
           this.deps.render();
         } else if (message.chunk.chunkType === 'user_question') {
+          this.hasPendingQuestion = true;
           this.deps.setPendingQuestion({
             requestId: message.chunk.requestId,
             questions: message.chunk.questions,
           });
           this.deps.render();
         } else if (message.chunk.chunkType === 'plan_approval') {
+          this.hasPendingPlanApproval = true;
           this.deps.setPendingPlanApproval({
             requestId: message.chunk.requestId,
             plan: message.chunk.plan,
@@ -111,12 +127,20 @@ export class AppMessageRouter {
 
       // Terminal stream events clear any pending panel state.
       case 'streamEnd':
-      case 'streamError':
+      case 'streamError': {
+        const hadPendingPanels = this.hasPendingConfirmation || this.hasPendingQuestion || this.hasPendingPlanApproval;
+        this.hasPendingConfirmation = false;
+        this.hasPendingQuestion = false;
+        this.hasPendingPlanApproval = false;
         this.deps.setPendingConfirmation(null);
         this.deps.setPendingQuestion(null);
         this.deps.setPendingPlanApproval(null);
         this.deps.setStreamStatus(reduceStreamStatus(this.deps.getStreamStatus(), { type: message.type }));
+        if (hadPendingPanels) {
+          this.deps.render();
+        }
         break;
+      }
 
       // IDE context chip updates are patched incrementally.
       case 'ideContextChanged': {

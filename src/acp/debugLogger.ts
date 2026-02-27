@@ -1,27 +1,30 @@
 import * as vscode from 'vscode';
+import { OutputChannelLogger } from '../shared/logger';
+import { isObject } from '../shared/typeGuards';
 
 const ACP_DEBUG_LOG_MAX_CHARS = 8000;
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 interface AcpNotificationEnvelopeLike {
   sessionId?: unknown;
 }
 
 export class AcpDebugLogger {
-  private outputChannel: vscode.OutputChannel | null = null;
+  private readonly logger: OutputChannelLogger;
 
   constructor(
     private readonly getConfig: <T>(key: string, defaultValue: T) => T,
-  ) {}
+  ) {
+    this.logger = new OutputChannelLogger(
+      { component: 'IFlow' },
+      {
+        createChannel: () => vscode.window.createOutputChannel('IFlow'),
+        getDebugLoggingEnabled: () => this.getConfig<boolean>('debugLogging', false),
+      },
+    );
+  }
 
   log(msg: string): void {
-    if (!this.outputChannel) {
-      this.outputChannel = vscode.window.createOutputChannel('IFlow');
-    }
-    this.outputChannel.appendLine(`[IFlow] ${msg}`);
+    this.logger.info(msg);
 
     if (this.getConfig<boolean>('debugLogging', false)) {
       console.log(`[IFlow] ${msg}`);
@@ -29,8 +32,7 @@ export class AcpDebugLogger {
   }
 
   dispose(): void {
-    this.outputChannel?.dispose();
-    this.outputChannel = null;
+    this.logger.dispose();
   }
 
   logSessionUpdateDebug(params: unknown, envelope: unknown, update: unknown): void {

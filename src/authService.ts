@@ -5,17 +5,22 @@ import * as url from 'url';
 import * as vscode from 'vscode';
 import {
   OAUTH_CLIENT_ID,
-  OAUTH_AUTH_URL,
-  OAUTH_TOKEN_URL,
-  OAUTH_USERINFO_URL,
   OAUTH_CALLBACK_PATH,
-  TOKEN_REFRESH_THRESHOLD_MS,
   OAUTH_CALLBACK_TIMEOUT_MS,
   OAUTH_REQUEST_TIMEOUT_MS,
+  OAUTH_USERINFO_URL,
+  TOKEN_REFRESH_THRESHOLD_MS,
 } from './authConstants';
 import { AuthCredentialsStore } from './auth/credentialsStore';
 import { AuthSettingsStore } from './auth/settingsStore';
-import { AuthLogger, OAuthCredentials, TokenResponse, UserInfoResponse } from './auth/types';
+import { PkceFlow } from './auth/pkceFlow';
+import { TokenManager } from './auth/tokenManager';
+import {
+  AuthLogger,
+  OAuthCredentials,
+  TokenResponse,
+  UserInfoResponse,
+} from './auth/types';
 
 export type { OAuthCredentials } from './auth/types';
 
@@ -30,6 +35,8 @@ export class AuthService {
   private readonly credentialsStore: AuthCredentialsStore;
   private readonly settingsStore: AuthSettingsStore;
   private readonly logger: AuthLogger;
+  private readonly pkceFlow: PkceFlow;
+  private readonly tokenManager: TokenManager;
 
   constructor(
     secrets: vscode.SecretStorage,
@@ -42,23 +49,17 @@ export class AuthService {
     };
     this.credentialsStore = deps.credentialsStore ?? new AuthCredentialsStore(secrets, this.logger);
     this.settingsStore = deps.settingsStore ?? new AuthSettingsStore(this.logger);
+    this.pkceFlow = new PkceFlow({
+      getOAuthClientId: () => this.getOAuthClientId(),
+      parseExpiresInSeconds: (value) => this.parseExpiresInSeconds(value),
+      httpsPost: (requestUrl, params) => this.httpsPost(requestUrl, params),
+    });
+    this.tokenManager = new TokenManager();
   }
 
-  // ── Public API ────────────────────────────────────────────────
-
-  /**
-   * Start full OAuth login flow with PKCE:
-   * 1. Start local callback server on a dynamic port
-   * 2. Open browser to iFlow OAuth page with code_challenge
-   * 3. Wait for callback with authorization code
-   * 4. Exchange code for tokens using code_verifier (no client_secret)
-   * 5. Fetch user info (including apiKey)
-   * 6. Save credentials to SecretStorage
-   */
   async startLogin(): Promise<void> {
     await this.migrateLegacyCredentialsIfNeeded();
 
-    // Prevent concurrent login flows
     if (this.callbackServer) {
       throw new Error('A login flow is already in progress');
     }
@@ -77,10 +78,7 @@ export class AuthService {
     const { code, port } = callbackResult;
     const redirectUri = `http://localhost:${port}${OAUTH_CALLBACK_PATH}`;
 
-    // Exchange code for tokens
     const tokens = await this.exchangeCodeForTokens(code, redirectUri, codeVerifier);
-
-    // Fetch user info
     const userInfo = await this.fetchUserInfo(tokens.access_token);
 
     const credentials: OAuthCredentials = {
@@ -102,63 +100,33 @@ export class AuthService {
     this.logInfo(`Login successful for user: ${credentials.userName}`);
   }
 
-  /** Clear stored OAuth credentials. */
   async logout(): Promise<void> {
     try {
-      await this.clearStoredCredentials();
-      this.clearSettings();
-      this.removeLegacyCredentialsFile();
+      await this.tokenManager.clearCredentials({
+        clearStoredCredentials: () => this.clearStoredCredentials(),
+        clearSettings: () => this.clearSettings(),
+        removeLegacyCredentialsFile: () => this.removeLegacyCredentialsFile(),
+      });
       this.logInfo('Logged out successfully');
     } catch (err) {
       this.logError(`Logout error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  /**
-   * Ensure the access token is valid; refresh if expiring within 24 hours.
-   * Returns true if auth is valid, false if not logged in or refresh failed.
-   */
   async ensureValidToken(): Promise<boolean> {
     await this.migrateLegacyCredentialsIfNeeded();
-
-    const creds = await this.readCredentials();
-    if (!creds) {
-      return false;
-    }
-
-    const timeUntilExpiry = creds.expiry_date - Date.now();
-    if (timeUntilExpiry > TOKEN_REFRESH_THRESHOLD_MS) {
-      return true;
-    }
-
-    if (timeUntilExpiry <= 0) {
-      this.logWarn('OAuth token expired, clearing credentials');
-      await this.logout();
-      return false;
-    }
-
-    try {
-      this.logInfo('OAuth token expiring soon, refreshing...');
-      const newTokens = await this.refreshAccessToken(creds.refresh_token);
-      const updatedCreds: OAuthCredentials = {
-        ...creds,
-        access_token: newTokens.access_token,
-        refresh_token: newTokens.refresh_token,
-        expiry_date: Date.now() + newTokens.expires_in * 1000,
-        token_type: newTokens.token_type,
-        scope: newTokens.scope,
-      };
-      await this.writeCredentials(updatedCreds);
-      this.updateSettings(updatedCreds.apiKey);
-      this.logInfo('OAuth token refreshed successfully');
-      return true;
-    } catch (err) {
-      this.logError(`Token refresh failed: ${err instanceof Error ? err.message : String(err)}`);
-      return false;
-    }
+    return this.tokenManager.ensureValidToken({
+      readCredentials: () => this.readCredentials(),
+      refreshCredentials: (refreshToken) => this.refreshAccessToken(refreshToken),
+      writeCredentials: (credentials) => this.writeCredentials(credentials),
+      updateSettings: (apiKey) => this.updateSettings(apiKey),
+      logout: () => this.logout(),
+      logInfo: (message) => this.logInfo(message),
+      logWarn: (message) => this.logWarn(message),
+      logError: (message) => this.logError(message),
+    }, TOKEN_REFRESH_THRESHOLD_MS);
   }
 
-  /** Check if OAuth credentials exist. */
   async isLoggedIn(): Promise<boolean> {
     await this.migrateLegacyCredentialsIfNeeded();
     return (await this.readCredentials()) !== null;
@@ -167,8 +135,6 @@ export class AuthService {
   dispose(): void {
     this.stopCallbackServer();
   }
-
-  // ── Private: Logging ──────────────────────────────────────────
 
   private logInfo(message: string): void {
     this.appendLog('INFO', message);
@@ -190,8 +156,6 @@ export class AuthService {
     this.outputChannel.appendLine(`[${timestamp}] [${level}] ${message}`);
   }
 
-  // ── Private: Secret storage + migration ───────────────────────
-
   private async migrateLegacyCredentialsIfNeeded(): Promise<void> {
     await this.credentialsStore.migrateLegacyCredentialsIfNeeded();
   }
@@ -212,8 +176,6 @@ export class AuthService {
     this.credentialsStore.removeLegacyCredentialsFile();
   }
 
-  // ── Private: settings.json I/O ────────────────────────────────
-
   private updateSettings(apiKey: string): void {
     this.settingsStore.updateSettings(apiKey);
   }
@@ -222,31 +184,22 @@ export class AuthService {
     this.settingsStore.clearSettings();
   }
 
-  // ── Private: PKCE + callback server ───────────────────────────
-
   private getOAuthClientId(): string {
     return vscode.workspace.getConfiguration('iflow').get<string>('oauthClientId', OAUTH_CLIENT_ID);
   }
 
-  private toBase64Url(input: Buffer): string {
-    return input
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/g, '');
-  }
-
   private generateCodeVerifier(): string {
-    return this.toBase64Url(crypto.randomBytes(32));
+    return this.pkceFlow.generateCodeVerifier();
   }
 
   private generateCodeChallenge(verifier: string): string {
-    return this.toBase64Url(crypto.createHash('sha256').update(verifier).digest());
+    return this.pkceFlow.generateCodeChallenge(verifier);
   }
 
-  /**
-   * Start a local HTTP server on a dynamic port and wait for OAuth callback.
-   */
+  private buildAuthorizeUrl(redirectUri: string, state: string, codeChallenge: string): string {
+    return this.pkceFlow.buildAuthorizeUrl(redirectUri, state, codeChallenge);
+  }
+
   private startCallbackServer(expectedState: string, codeChallenge: string): Promise<{ code: string; port: number }> {
     return new Promise<{ code: string; port: number }>((resolve, reject) => {
       const server = http.createServer((req, res) => {
@@ -308,17 +261,7 @@ export class AuthService {
         this.logInfo(`OAuth callback server listening on port ${port}`);
 
         const redirectUri = `http://localhost:${port}${OAUTH_CALLBACK_PATH}`;
-        const params = new url.URLSearchParams({
-          loginMethod: 'phone',
-          type: 'phone',
-          response_type: 'code',
-          redirect: redirectUri,
-          state: expectedState,
-          client_id: this.getOAuthClientId(),
-          code_challenge: codeChallenge,
-          code_challenge_method: 'S256',
-        });
-        const authUrl = `${OAUTH_AUTH_URL}?${params.toString()}`;
+        const authUrl = this.buildAuthorizeUrl(redirectUri, expectedState, codeChallenge);
 
         this.logInfo(`Opening browser: ${authUrl}`);
         vscode.env.openExternal(vscode.Uri.parse(authUrl)).then((ok) => {
@@ -348,32 +291,12 @@ export class AuthService {
     }
   }
 
-  // ── Private: OAuth API calls ──────────────────────────────────
-
   private async exchangeCodeForTokens(
     code: string,
     redirectUri: string,
     codeVerifier: string,
   ): Promise<TokenResponse> {
-    const response = await this.httpsPost(OAUTH_TOKEN_URL, {
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: redirectUri,
-      client_id: this.getOAuthClientId(),
-      code_verifier: codeVerifier,
-    });
-
-    if (!response.access_token) {
-      throw new Error(`Token exchange failed: ${JSON.stringify(response)}`);
-    }
-
-    return {
-      access_token: response.access_token as string,
-      refresh_token: response.refresh_token as string,
-      expires_in: this.parseExpiresInSeconds(response.expires_in),
-      token_type: (response.token_type as string) || 'bearer',
-      scope: (response.scope as string) || 'read',
-    };
+    return this.pkceFlow.exchangeCodeForTokens(code, redirectUri, codeVerifier);
   }
 
   private async fetchUserInfo(accessToken: string): Promise<UserInfoResponse> {
@@ -397,26 +320,8 @@ export class AuthService {
   }
 
   private async refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
-    const response = await this.httpsPost(OAUTH_TOKEN_URL, {
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: this.getOAuthClientId(),
-    });
-
-    if (!response.access_token) {
-      throw new Error(`Token refresh failed: ${JSON.stringify(response)}`);
-    }
-
-    return {
-      access_token: response.access_token as string,
-      refresh_token: (response.refresh_token as string) || refreshToken,
-      expires_in: this.parseExpiresInSeconds(response.expires_in),
-      token_type: (response.token_type as string) || 'bearer',
-      scope: (response.scope as string) || 'read',
-    };
+    return this.pkceFlow.refreshCredentials(refreshToken);
   }
-
-  // ── Private: HTTPS helpers ────────────────────────────────────
 
   private httpsPost(requestUrl: string, params: Record<string, string>): Promise<Record<string, unknown>> {
     const body = Object.entries(params)

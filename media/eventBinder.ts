@@ -8,7 +8,7 @@ import {
   attachApprovalListeners,
   attachQuestionListeners,
   attachPlanApprovalListeners,
-} from './panels/panelBinders';
+} from './panels/panelControllers';
 
 function isKeyboardActivation(event: KeyboardEvent): boolean {
   return event.key === 'Enter' || event.key === ' ';

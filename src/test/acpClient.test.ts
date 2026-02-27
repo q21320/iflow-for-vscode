@@ -279,6 +279,74 @@ suite('AcpClient', () => {
     assert.strictEqual(usage?.totalTokens, 798);
   });
 
+  test('run falls back to session/prompt result text when no session/update is emitted', async () => {
+    const chunks: any[] = [];
+
+    const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
+    fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
+      if (method === 'session/prompt') {
+        return {
+          stopReason: 'end_turn',
+          content: { type: 'text', text: 'Result-only fallback text.' },
+        };
+      }
+      return originalSendRequest(method, params);
+    };
+
+    await client.run(
+      {
+        prompt: 'hello',
+        attachedFiles: [],
+        mode: 'default',
+        think: false,
+        model: 'GLM-4.7' as any,
+      },
+      (chunk) => chunks.push(chunk),
+      () => {},
+      () => {},
+    );
+
+    const textChunks = chunks.filter((c) => c.chunkType === 'text');
+    assert.strictEqual(textChunks.length, 1);
+    assert.strictEqual(textChunks[0]?.content, 'Result-only fallback text.');
+  });
+
+  test('run does not duplicate prompt-result text when session/update chunks exist', async () => {
+    const chunks: any[] = [];
+
+    const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
+    fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
+      if (method === 'session/prompt') {
+        fakeProtocol.simulateUpdate({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Update text wins.' },
+        });
+        return {
+          stopReason: 'end_turn',
+          content: { type: 'text', text: 'Result fallback should be ignored.' },
+        };
+      }
+      return originalSendRequest(method, params);
+    };
+
+    await client.run(
+      {
+        prompt: 'hello',
+        attachedFiles: [],
+        mode: 'default',
+        think: false,
+        model: 'GLM-4.7' as any,
+      },
+      (chunk) => chunks.push(chunk),
+      () => {},
+      () => {},
+    );
+
+    const textChunks = chunks.filter((c) => c.chunkType === 'text');
+    assert.strictEqual(textChunks.length, 1);
+    assert.strictEqual(textChunks[0]?.content, 'Update text wins.');
+  });
+
   test('run recreates session and retries when prompt returns session not found', async () => {
     let ended = false;
     let error: string | null = null;
