@@ -8,7 +8,7 @@ import { AcpTransport } from './acpTransport';
 import { AcpProtocol } from './acpProtocol';
 import { ProcessManager } from './processManager';
 import { InteractionBridge } from './acp/interactionBridge';
-import { normalizeErrorMessage } from './errorUtils';
+import { classifyAppErrorCode, toAppError } from './errorUtils';
 import { PathPolicy } from './acp/pathPolicy';
 import { RuntimeConfigApplier } from './acp/runtimeConfigApplier';
 import { SessionCoordinator } from './acp/sessionCoordinator';
@@ -160,8 +160,8 @@ export class AcpClient {
           : `iFlow CLI found at ${startInfo.iflowScript} (version unknown)`,
       };
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { version: null, diagnostics: message };
+      const appError = toAppError(err);
+      return { version: null, diagnostics: appError.message };
     }
   }
 
@@ -326,8 +326,8 @@ export class AcpClient {
       onEnd();
       return this.sessionCoordinator.currentSessionId ?? undefined;
     } catch (err: unknown) {
-      const message = normalizeErrorMessage(err, 'Unknown ACP error');
-      onError(message);
+      const appError = toAppError(err, 'Unknown ACP error');
+      onError(appError.message);
       return undefined;
     } finally {
       this.running = false;
@@ -472,12 +472,7 @@ export class AcpClient {
   }
 
   private isMissingSessionError(error: unknown): boolean {
-    const normalized = normalizeErrorMessage(error, '').toLowerCase();
-    if (!normalized) {
-      return false;
-    }
-    return normalized.includes('session not found')
-      || (normalized.includes('session') && normalized.includes('not found'));
+    return classifyAppErrorCode(error) === 'MISSING_SESSION';
   }
 
   private async recoverMissingSession(

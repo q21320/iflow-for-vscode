@@ -33,13 +33,14 @@ import {
   closePanelsOnOutsideClick,
 } from './eventBinder';
 import type { AppHost } from './eventBinder';
-import { performFullRender } from './renderCoordinator';
+import { createStringTemplateRenderDriver, type WebviewRenderDriver } from './renderDriver';
 import {
   updateComposerStatusBarView,
   updateIDEContextChipsView,
   updatePendingIndicatorView,
   updateStreamingContentView,
 } from './streamingViewUpdater';
+import { VisualUpdateScheduler } from '../src/shared/visualUpdateScheduler';
 
 interface VsCodeApi {
   postMessage(message: WebviewMessage): void;
@@ -67,6 +68,8 @@ class IFlowApp implements AppHost {
   private ideContext: IDEContext = { activeFile: null, selection: null };
   private ideContextDismissed = { activeFile: false, selection: false };
   private latestRoundChangesByConversationId = new Map<string, RoundFileChangeSummary>();
+  private readonly visualUpdateScheduler: VisualUpdateScheduler;
+  private readonly renderDriver: WebviewRenderDriver;
 
   // AppHost public state (accessed by event binders)
   showConversationPanel = false;
@@ -76,6 +79,15 @@ class IFlowApp implements AppHost {
   constructor() {
     this.vscode = acquireVsCodeApi();
     this.faviconUri = document.getElementById('app')?.getAttribute('data-favicon-uri') || '';
+    this.renderDriver = createStringTemplateRenderDriver();
+    this.visualUpdateScheduler = new VisualUpdateScheduler(
+      (run) => window.requestAnimationFrame(() => run()),
+      (token) => window.cancelAnimationFrame(token),
+      {
+        onStreamingUpdate: () => this.applyStreamingContentUpdate(),
+        onPendingIndicatorUpdate: () => this.applyPendingIndicatorUpdate(),
+      },
+    );
     this.inputCtrl = new InputController({
       postMessage: (msg) => this.vscode.postMessage(msg),
       getInputElement: () => document.getElementById('message-input') as HTMLTextAreaElement | null,
@@ -132,8 +144,8 @@ class IFlowApp implements AppHost {
         }
         this.render(conversationChanged);
       },
-      updateStreamingContent: () => this.updateStreamingContent(),
-      updatePendingIndicator: () => this.updatePendingIndicator(),
+      updateStreamingContent: () => this.scheduleStreamingContentUpdate(),
+      updatePendingIndicator: () => this.schedulePendingIndicatorUpdate(),
       updateIDEContextChips: () => this.updateIDEContextChips(),
     });
     this.setupMessageHandler();
@@ -298,6 +310,8 @@ class IFlowApp implements AppHost {
     const app = document.getElementById('app');
     if (!app) return;
 
+    this.visualUpdateScheduler.cancelAll();
+
     const clearInput = this.clearInputOnNextRender;
     this.clearInputOnNextRender = false;
 
@@ -341,7 +355,7 @@ class IFlowApp implements AppHost {
       </div>
     `;
 
-    performFullRender({
+    this.renderDriver.renderFull({
       app,
       clearInputOnNextRender: clearInput,
       html,
@@ -371,11 +385,15 @@ class IFlowApp implements AppHost {
    * Incremental update during streaming: only update the last assistant message
    * and the pending indicator, avoiding a full DOM rebuild.
    */
-  private updateStreamingContent(): void {
+  private scheduleStreamingContentUpdate(): void {
+    this.visualUpdateScheduler.scheduleStreamingUpdate();
+  }
+
+  private applyStreamingContentUpdate(): void {
     updateStreamingContentView({
       conversation: this.getCurrentConversation(),
       fallbackRender: () => this.render(),
-      updatePendingIndicator: (container) => this.updatePendingIndicator(container),
+      updatePendingIndicator: (container) => this.applyPendingIndicatorUpdate(container),
       updateComposerStatusBar: () => this.updateComposerStatusBar(),
       scrollToBottom: () => this.scrollToBottom(),
     });
@@ -408,7 +426,11 @@ class IFlowApp implements AppHost {
     });
   }
 
-  private updatePendingIndicator(container?: Element): void {
+  private schedulePendingIndicatorUpdate(): void {
+    this.visualUpdateScheduler.schedulePendingIndicatorUpdate();
+  }
+
+  private applyPendingIndicatorUpdate(container?: Element): void {
     updatePendingIndicatorView({
       container,
       isStreaming: this.state?.isStreaming ?? false,
@@ -466,6 +488,7 @@ class IFlowApp implements AppHost {
   }
 
   dispose(): void {
+    this.visualUpdateScheduler.cancelAll();
     this.composerResizeObserver?.disconnect();
     this.composerResizeObserver = null;
     this.slashMenu.dispose();

@@ -139,7 +139,7 @@ suite('FileChangeReviewService', () => {
       });
 
       assert.strictEqual(summary.changedFiles.length, 2);
-      assert.strictEqual(summary.totalAdded, 5);
+      assert.strictEqual(summary.totalAdded, 4);
       assert.strictEqual(summary.totalRemoved, 1);
     } finally {
       service.dispose();

@@ -295,4 +295,42 @@ suite('ConversationStore', () => {
     assert.strictEqual(snapshot.conversations.length, 1);
     assert.strictEqual(snapshot.conversations[0].mode, 'plan');
   });
+
+  test('runtime cli status is not persisted when runtime snapshot source is enabled', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    const store = new ConversationStore(memento as unknown as import('vscode').Memento, () => {});
+    store.newConversation();
+    store.setCliStatus(false, '0.0.1', 'cli down');
+
+    const snapshot = memento.snapshot() as Record<string, unknown>;
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(snapshot, 'cliAvailable'), false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(snapshot, 'cliVersion'), false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(snapshot, 'cliDiagnostics'), false);
+  });
+
+  test('legacy runtime mode keeps persisted cli status for rollback switch', () => {
+    const memento = new FakeMemento({
+      currentId: null,
+      conversations: []
+    });
+    const store = new ConversationStore(
+      memento as unknown as import('vscode').Memento,
+      () => {},
+      { useRuntimeSnapshot: false },
+    );
+    store.newConversation();
+    store.setCliStatus(false, '0.0.1', 'cli down');
+
+    const snapshot = memento.snapshot() as {
+      cliAvailable?: boolean;
+      cliVersion?: string | null;
+      cliDiagnostics?: string | null;
+    };
+    assert.strictEqual(snapshot.cliAvailable, false);
+    assert.strictEqual(snapshot.cliVersion, '0.0.1');
+    assert.strictEqual(snapshot.cliDiagnostics, 'cli down');
+  });
 });

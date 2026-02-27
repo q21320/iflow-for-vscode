@@ -1,6 +1,5 @@
 import * as http from 'http';
 import * as https from 'https';
-import * as fs from 'fs';
 import * as crypto from 'crypto';
 import * as url from 'url';
 import * as vscode from 'vscode';
@@ -10,54 +9,40 @@ import {
   OAUTH_TOKEN_URL,
   OAUTH_USERINFO_URL,
   OAUTH_CALLBACK_PATH,
-  IFLOW_DIR,
-  OAUTH_CREDS_PATH,
-  SETTINGS_PATH,
   TOKEN_REFRESH_THRESHOLD_MS,
   OAUTH_CALLBACK_TIMEOUT_MS,
-  OAUTH_SECRET_STORAGE_KEY,
   OAUTH_REQUEST_TIMEOUT_MS,
 } from './authConstants';
+import { AuthCredentialsStore } from './auth/credentialsStore';
+import { AuthSettingsStore } from './auth/settingsStore';
+import { AuthLogger, OAuthCredentials, TokenResponse, UserInfoResponse } from './auth/types';
 
-/** Shape of persisted OAuth credentials. */
-export interface OAuthCredentials {
-  readonly access_token: string;
-  readonly refresh_token: string;
-  readonly expiry_date: number;
-  readonly token_type: string;
-  readonly scope: string;
-  readonly apiKey: string;
-  readonly userId: string;
-  readonly userName: string;
-  readonly avatar: string;
-  readonly email: string;
-  readonly phone: string;
-}
+export type { OAuthCredentials } from './auth/types';
 
-interface TokenResponse {
-  readonly access_token: string;
-  readonly refresh_token: string;
-  readonly expires_in: number;
-  readonly token_type: string;
-  readonly scope: string;
-}
-
-interface UserInfoResponse {
-  readonly apiKey: string;
-  readonly userId: string;
-  readonly userName: string;
-  readonly avatar: string;
-  readonly email: string;
-  readonly phone: string;
+interface AuthServiceDependencies {
+  credentialsStore?: AuthCredentialsStore;
+  settingsStore?: AuthSettingsStore;
 }
 
 export class AuthService {
   private callbackServer: http.Server | null = null;
   private outputChannel: vscode.OutputChannel | null = null;
-  private cachedCredentials: OAuthCredentials | null = null;
-  private migrationChecked = false;
+  private readonly credentialsStore: AuthCredentialsStore;
+  private readonly settingsStore: AuthSettingsStore;
+  private readonly logger: AuthLogger;
 
-  constructor(private readonly secrets: vscode.SecretStorage) {}
+  constructor(
+    secrets: vscode.SecretStorage,
+    deps: AuthServiceDependencies = {},
+  ) {
+    this.logger = {
+      info: (message: string) => this.logInfo(message),
+      warn: (message: string) => this.logWarn(message),
+      error: (message: string) => this.logError(message),
+    };
+    this.credentialsStore = deps.credentialsStore ?? new AuthCredentialsStore(secrets, this.logger);
+    this.settingsStore = deps.settingsStore ?? new AuthSettingsStore(this.logger);
+  }
 
   // ── Public API ────────────────────────────────────────────────
 
@@ -120,8 +105,7 @@ export class AuthService {
   /** Clear stored OAuth credentials. */
   async logout(): Promise<void> {
     try {
-      this.cachedCredentials = null;
-      await this.secrets.delete(OAUTH_SECRET_STORAGE_KEY);
+      await this.clearStoredCredentials();
       this.clearSettings();
       this.removeLegacyCredentialsFile();
       this.logInfo('Logged out successfully');
@@ -209,155 +193,33 @@ export class AuthService {
   // ── Private: Secret storage + migration ───────────────────────
 
   private async migrateLegacyCredentialsIfNeeded(): Promise<void> {
-    if (this.migrationChecked) {
-      return;
-    }
-    this.migrationChecked = true;
-
-    const legacy = this.readLegacyCredentialsFromFile();
-    if (!legacy) {
-      return;
-    }
-
-    const existing = await this.readCredentialsFromSecretStorage();
-    if (!existing) {
-      await this.writeCredentials(legacy);
-      this.logInfo('Migrated legacy OAuth credentials from file to SecretStorage');
-    } else {
-      this.logWarn('Legacy OAuth credentials file exists, but SecretStorage already has credentials; skipping overwrite');
-    }
-
-    this.removeLegacyCredentialsFile();
+    await this.credentialsStore.migrateLegacyCredentialsIfNeeded();
   }
 
   private async readCredentials(): Promise<OAuthCredentials | null> {
-    if (this.cachedCredentials) {
-      return this.cachedCredentials;
-    }
-
-    const creds = await this.readCredentialsFromSecretStorage();
-    if (creds) {
-      this.cachedCredentials = creds;
-    }
-    return creds;
-  }
-
-  private async readCredentialsFromSecretStorage(): Promise<OAuthCredentials | null> {
-    try {
-      const raw = await this.secrets.get(OAUTH_SECRET_STORAGE_KEY);
-      if (!raw) {
-        return null;
-      }
-
-      const parsed = JSON.parse(raw);
-      if (!this.isValidCredentials(parsed)) {
-        this.logWarn('SecretStorage credentials are malformed, clearing stored entry');
-        await this.secrets.delete(OAUTH_SECRET_STORAGE_KEY);
-        return null;
-      }
-
-      return parsed as OAuthCredentials;
-    } catch (err) {
-      this.logError(`Failed to read credentials from SecretStorage: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
-    }
+    return this.credentialsStore.readCredentials();
   }
 
   private async writeCredentials(creds: OAuthCredentials): Promise<void> {
-    this.cachedCredentials = creds;
-    await this.secrets.store(OAUTH_SECRET_STORAGE_KEY, JSON.stringify(creds));
+    await this.credentialsStore.writeCredentials(creds);
   }
 
-  private readLegacyCredentialsFromFile(): OAuthCredentials | null {
-    try {
-      if (!fs.existsSync(OAUTH_CREDS_PATH)) {
-        return null;
-      }
-      const content = fs.readFileSync(OAUTH_CREDS_PATH, 'utf-8');
-      const parsed = JSON.parse(content);
-      if (!this.isValidCredentials(parsed)) {
-        this.logWarn('Legacy oauth_creds.json is malformed and will be removed');
-        return null;
-      }
-      return parsed as OAuthCredentials;
-    } catch (err) {
-      this.logError(`Failed to read legacy credentials file: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
-    }
+  private async clearStoredCredentials(): Promise<void> {
+    await this.credentialsStore.clearCredentials();
   }
 
   private removeLegacyCredentialsFile(): void {
-    try {
-      if (fs.existsSync(OAUTH_CREDS_PATH)) {
-        fs.unlinkSync(OAUTH_CREDS_PATH);
-      }
-    } catch (err) {
-      this.logError(`Failed to remove legacy credentials file: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  private isValidCredentials(value: unknown): value is OAuthCredentials {
-    if (!value || typeof value !== 'object') {
-      return false;
-    }
-    const record = value as Record<string, unknown>;
-    return typeof record.access_token === 'string'
-      && typeof record.refresh_token === 'string'
-      && typeof record.expiry_date === 'number'
-      && typeof record.token_type === 'string'
-      && typeof record.scope === 'string'
-      && typeof record.apiKey === 'string';
+    this.credentialsStore.removeLegacyCredentialsFile();
   }
 
   // ── Private: settings.json I/O ────────────────────────────────
 
   private updateSettings(apiKey: string): void {
-    try {
-      let settings: Record<string, unknown> = {};
-      if (fs.existsSync(SETTINGS_PATH)) {
-        try {
-          settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
-        } catch (err) {
-          this.logWarn(`Failed to parse settings.json, recreating file: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      const updated = {
-        ...settings,
-        selectedAuthType: 'oauth-iflow',
-        apiKey,
-      };
-      if (!fs.existsSync(IFLOW_DIR)) {
-        fs.mkdirSync(IFLOW_DIR, { recursive: true });
-      }
-      const content = JSON.stringify(updated, null, 2);
-      if (process.platform === 'win32') {
-        fs.writeFileSync(SETTINGS_PATH, content, 'utf-8');
-      } else {
-        fs.writeFileSync(SETTINGS_PATH, content, { encoding: 'utf-8', mode: 0o600 });
-      }
-    } catch (err) {
-      this.logError(`Failed to update settings: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    this.settingsStore.updateSettings(apiKey);
   }
 
   private clearSettings(): void {
-    try {
-      if (!fs.existsSync(SETTINGS_PATH)) {
-        return;
-      }
-      const settings: Record<string, unknown> = JSON.parse(
-        fs.readFileSync(SETTINGS_PATH, 'utf-8')
-      );
-      const { selectedAuthType: _selectedAuthType, apiKey: _apiKey, ...rest } = settings;
-      const content = JSON.stringify(rest, null, 2);
-      if (process.platform === 'win32') {
-        fs.writeFileSync(SETTINGS_PATH, content, 'utf-8');
-      } else {
-        fs.writeFileSync(SETTINGS_PATH, content, { encoding: 'utf-8', mode: 0o600 });
-      }
-    } catch (err) {
-      this.logError(`Failed to clear settings: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    this.settingsStore.clearSettings();
   }
 
   // ── Private: PKCE + callback server ───────────────────────────

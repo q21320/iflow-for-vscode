@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { diffLines } from 'diff';
 import { RoundFileChange, RoundFileChangeSummary, StreamChunk } from '../protocol';
 
 interface FileSnapshot {
@@ -59,61 +60,32 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function splitLines(content: string): string[] {
-  if (!content) {
-    return [];
+function countChunkLines(value: string): number {
+  if (!value) {
+    return 0;
   }
-  return content.split(/\r?\n/);
-}
-
-function computeShortestEditDistance(beforeLines: string[], afterLines: string[]): number {
-  const n = beforeLines.length;
-  const m = afterLines.length;
-  if (n === 0) {
-    return m;
+  const matches = value.match(/\n/g);
+  const newlineCount = matches ? matches.length : 0;
+  if (value.endsWith('\n')) {
+    return newlineCount;
   }
-  if (m === 0) {
-    return n;
-  }
-
-  const max = n + m;
-  const offset = max;
-  const v: number[] = new Array((max * 2) + 1).fill(0);
-  v[offset + 1] = 0;
-
-  for (let d = 0; d <= max; d += 1) {
-    for (let k = -d; k <= d; k += 2) {
-      const index = offset + k;
-      let x: number;
-      if (k === -d || (k !== d && v[index - 1] < v[index + 1])) {
-        x = v[index + 1];
-      } else {
-        x = v[index - 1] + 1;
-      }
-
-      let y = x - k;
-      while (x < n && y < m && beforeLines[x] === afterLines[y]) {
-        x += 1;
-        y += 1;
-      }
-      v[index] = x;
-
-      if (x >= n && y >= m) {
-        return d;
-      }
-    }
-  }
-
-  return max;
+  return newlineCount + 1;
 }
 
 function computeAddedRemoved(beforeContent: string, afterContent: string): { added: number; removed: number } {
-  const beforeLines = splitLines(beforeContent);
-  const afterLines = splitLines(afterContent);
-  const delta = afterLines.length - beforeLines.length;
-  const shortestDistance = computeShortestEditDistance(beforeLines, afterLines);
-  const added = Math.max(0, Math.round((shortestDistance + delta) / 2));
-  const removed = Math.max(0, Math.round((shortestDistance - delta) / 2));
+  let added = 0;
+  let removed = 0;
+
+  const changes = diffLines(beforeContent, afterContent);
+  for (const change of changes) {
+    const lineCount = change.count ?? countChunkLines(change.value);
+    if (change.added) {
+      added += lineCount;
+    } else if (change.removed) {
+      removed += lineCount;
+    }
+  }
+
   return { added, removed };
 }
 

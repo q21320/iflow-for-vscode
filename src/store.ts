@@ -13,6 +13,11 @@ import {
 import { applyChunkToMessage } from './store/chunkReducer';
 import { updateConversationById as applyConversationUpdate, deriveConversationTitle, createConversationId } from './store/conversationMutations';
 import { estimateConversationContextUsage, ContextUsage } from './store/contextUsageEstimator';
+import {
+  INITIAL_RUNTIME_STATE_SNAPSHOT,
+  RuntimeStateSnapshot,
+  RuntimeStateSource,
+} from './store/runtimeStateSource';
 
 const STORAGE_KEY = 'iflow.conversations';
 
@@ -20,35 +25,72 @@ interface AppendAssistantOptions {
   notify?: boolean;
 }
 
+interface PersistedConversationState {
+  currentConversationId: string | null;
+  conversations: Conversation[];
+}
+
+interface SavedConversationState {
+  currentId: string | null;
+  conversations: Conversation[];
+  cliAvailable?: boolean;
+  cliVersion?: string | null;
+  cliDiagnostics?: string | null;
+}
+
+export interface ConversationStoreOptions {
+  useRuntimeSnapshot?: boolean;
+}
+
+function cloneRuntimeSnapshot(snapshot: RuntimeStateSnapshot): RuntimeStateSnapshot {
+  return {
+    ...snapshot,
+    workspaceFolders: snapshot.workspaceFolders.map((folder) => ({ ...folder })),
+  };
+}
+
 export class ConversationStore {
-  private state: ConversationState;
+  private state: PersistedConversationState;
   private readonly memento: vscode.Memento;
   private readonly onStateChange: (state: ConversationState) => void;
+  private readonly useRuntimeSnapshot: boolean;
+  private readonly runtimeStateSource: RuntimeStateSource;
+  private legacyRuntimeState: RuntimeStateSnapshot;
   private batchDepth = 0;
   private readonly acpUsedTokensByConversationId = new Map<string, number>();
 
-  constructor(memento: vscode.Memento, onStateChange: (state: ConversationState) => void) {
+  constructor(
+    memento: vscode.Memento,
+    onStateChange: (state: ConversationState) => void,
+    options: ConversationStoreOptions = {},
+  ) {
     this.memento = memento;
     this.onStateChange = onStateChange;
+    this.useRuntimeSnapshot = options.useRuntimeSnapshot ?? true;
 
-    const saved = memento.get<{ conversations: Conversation[]; currentId: string | null; cliAvailable?: boolean; cliVersion?: string | null }>(STORAGE_KEY);
+    const saved = memento.get<SavedConversationState>(STORAGE_KEY);
 
     this.state = {
       currentConversationId: saved?.currentId || null,
       conversations: saved?.conversations || [],
-      cliAvailable: true,
-      cliVersion: saved?.cliVersion ?? null,
-      cliDiagnostics: null,
-      isStreaming: false,
-      workspaceFolders: [],
-      isMultiRoot: false,
     };
+
+    const initialRuntimeState: RuntimeStateSnapshot = {
+      ...INITIAL_RUNTIME_STATE_SNAPSHOT,
+      cliAvailable: saved?.cliAvailable ?? INITIAL_RUNTIME_STATE_SNAPSHOT.cliAvailable,
+      cliVersion: saved?.cliVersion ?? INITIAL_RUNTIME_STATE_SNAPSHOT.cliVersion,
+      cliDiagnostics: saved?.cliDiagnostics ?? INITIAL_RUNTIME_STATE_SNAPSHOT.cliDiagnostics,
+    };
+    this.runtimeStateSource = new RuntimeStateSource(initialRuntimeState);
+    this.legacyRuntimeState = cloneRuntimeSnapshot(initialRuntimeState);
   }
 
   getState(): ConversationState {
     const current = this.getCurrentConversation();
+    const runtime = this.getRuntimeStateSnapshot();
     return {
       ...this.state,
+      ...runtime,
       contextUsage: this.resolveContextUsage(current),
     };
   }
@@ -61,22 +103,30 @@ export class ConversationStore {
   }
 
   setCliStatus(available: boolean, version: string | null, diagnostics?: string): void {
-    this.state = {
-      ...this.state,
-      cliAvailable: available,
-      cliVersion: version,
-      cliDiagnostics: diagnostics ?? null,
-    };
-    this.save();
+    if (this.useRuntimeSnapshot) {
+      this.runtimeStateSource.setCliStatus(available, version, diagnostics);
+    } else {
+      this.legacyRuntimeState = {
+        ...this.legacyRuntimeState,
+        cliAvailable: available,
+        cliVersion: version,
+        cliDiagnostics: diagnostics ?? null,
+      };
+      this.save();
+    }
     this.notifyChange();
   }
 
   setWorkspaceFolders(folders: Array<{ uri: string; name: string }>): void {
-    this.state = {
-      ...this.state,
-      workspaceFolders: [...folders],
-      isMultiRoot: folders.length > 1,
-    };
+    if (this.useRuntimeSnapshot) {
+      this.runtimeStateSource.setWorkspaceFolders(folders);
+    } else {
+      this.legacyRuntimeState = {
+        ...this.legacyRuntimeState,
+        workspaceFolders: [...folders],
+        isMultiRoot: folders.length > 1,
+      };
+    }
     this.notifyChange();
   }
 
@@ -93,7 +143,14 @@ export class ConversationStore {
   }
 
   setStreaming(streaming: boolean): void {
-    this.state = { ...this.state, isStreaming: streaming };
+    if (this.useRuntimeSnapshot) {
+      this.runtimeStateSource.setStreaming(streaming);
+    } else {
+      this.legacyRuntimeState = {
+        ...this.legacyRuntimeState,
+        isStreaming: streaming,
+      };
+    }
     this.notifyChange();
   }
 
@@ -385,12 +442,18 @@ export class ConversationStore {
   }
 
   private save(): void {
-    void this.memento.update(STORAGE_KEY, {
+    const payload: SavedConversationState = {
       conversations: this.state.conversations,
       currentId: this.state.currentConversationId,
-      cliAvailable: this.state.cliAvailable,
-      cliVersion: this.state.cliVersion,
-    });
+    };
+
+    if (!this.useRuntimeSnapshot) {
+      payload.cliAvailable = this.legacyRuntimeState.cliAvailable;
+      payload.cliVersion = this.legacyRuntimeState.cliVersion;
+      payload.cliDiagnostics = this.legacyRuntimeState.cliDiagnostics;
+    }
+
+    void this.memento.update(STORAGE_KEY, payload);
   }
 
   private notifyChange(): void {
@@ -425,6 +488,13 @@ export class ConversationStore {
     const { nextState, updatedConversation } = applyConversationUpdate(this.state, conversationId, updater);
     this.state = nextState;
     return updatedConversation;
+  }
+
+  private getRuntimeStateSnapshot(): RuntimeStateSnapshot {
+    if (this.useRuntimeSnapshot) {
+      return this.runtimeStateSource.getSnapshot();
+    }
+    return cloneRuntimeSnapshot(this.legacyRuntimeState);
   }
 
   private resolveContextUsage(conversation: Conversation | null): ContextUsage {

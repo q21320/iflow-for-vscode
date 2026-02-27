@@ -1,5 +1,5 @@
 import { AcpClient } from '../acpClient';
-import { normalizeErrorMessage } from '../errorUtils';
+import { toAppError } from '../errorUtils';
 import { ConversationStore } from '../store';
 import { AttachedFile, Conversation, ExtensionMessage, IDEContext, StreamChunk, StreamStatusPhase } from '../protocol';
 import { PlanApprovalCoordinator } from './planApprovalCoordinator';
@@ -181,7 +181,7 @@ export class SendMessagePipeline {
           succeeded,
         });
       } catch (error) {
-        const messageText = normalizeErrorMessage(error, 'Run finalize hook failed');
+        const messageText = toAppError(error, 'Run finalize hook failed').message;
         this.deps.debug(messageText);
       }
     };
@@ -233,12 +233,13 @@ export class SendMessagePipeline {
         (error) => {
           runCompleted = true;
           flushPendingStatePublish();
-          let normalizedError = normalizeErrorMessage(error);
+          const appError = toAppError(error);
+          let normalizedError = appError.message;
           this.deps.debug(`Run failed: ${normalizedError}`);
-          if (this.isMissingSessionError(normalizedError)) {
+          if (appError.code === 'MISSING_SESSION') {
             this.deps.debug('Detected missing ACP session; clearing persisted conversation session id');
             this.deps.clearSessionId?.();
-          } else if (this.shouldResetCli(normalizedError)) {
+          } else if (appError.code === 'CLI_UNAVAILABLE') {
             this.deps.markCliUnavailable(normalizedError);
             normalizedError = this.appendCliReconnectHint(normalizedError);
           }
@@ -336,27 +337,6 @@ export class SendMessagePipeline {
     const ttft = firstChunkAt === null ? 'n/a' : `${Math.max(0, firstChunkAt - sendStartedAt)}ms`;
     const workspaceScan = workspaceScanMs === null ? 'n/a' : `${Math.max(0, workspaceScanMs)}ms`;
     this.deps.debug(`[perf] ttft=${ttft} preflight=${preflightMs}ms total=${totalMs}ms workspaceScan=${workspaceScan}`);
-  }
-
-  private shouldResetCli(error: string): boolean {
-    if (this.isMissingSessionError(error)) {
-      return false;
-    }
-
-    const normalized = error.toLowerCase();
-    return normalized.includes('connect')
-      || normalized.includes('econnrefused')
-      || normalized.includes('socket hang up')
-      || normalized.includes('econnreset')
-      || normalized.includes('epipe')
-      || normalized.includes('not available')
-      || normalized.includes('cli not found');
-  }
-
-  private isMissingSessionError(error: string): boolean {
-    const normalized = error.toLowerCase();
-    return normalized.includes('session not found')
-      || (normalized.includes('session') && normalized.includes('not found'));
   }
 
   private resolveStreamRenderIntervalMs(): number {

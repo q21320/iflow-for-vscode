@@ -14,7 +14,7 @@ import { WorkspaceFileService } from './webview/workspaceFileService';
 import { IDEContextSyncService } from './webview/ideContextSyncService';
 import { AuthCommandHandler } from './webview/authCommandHandler';
 import { FileChangeReviewService } from './webview/fileChangeReviewService';
-import { normalizeErrorMessage } from './errorUtils';
+import { toAppError } from './errorUtils';
 import {
   DEFAULT_STREAM_RENDER_INTERVAL_MS,
   DEFAULT_WORKSPACE_FILES_LIMIT,
@@ -255,7 +255,7 @@ export class WebviewHandler {
           try {
             await this.workspaceFileService.openFile(msg.path);
           } catch (error) {
-            const messageText = error instanceof Error ? error.message : String(error);
+            const messageText = toAppError(error).message;
             this.debug(`Failed to open file ${msg.path}: ${messageText}`);
           }
         },
@@ -292,7 +292,7 @@ export class WebviewHandler {
             const summary = await this.fileChangeReviewService.handleAction(msg);
             this.postMessage({ type: 'roundFileChanges', summary });
           } catch (error) {
-            const messageText = normalizeErrorMessage(error, 'Failed to handle file change action');
+            const messageText = toAppError(error, 'Failed to handle file change action').message;
             this.debug(`fileChangeAction failed (${msg.action}): ${messageText}`);
             await this.deps.showErrorMessage(messageText);
           }
@@ -320,7 +320,7 @@ export class WebviewHandler {
         this.debug(`Unhandled webview message type: ${unknownType}`);
       });
     } catch (error) {
-      const messageText = normalizeErrorMessage(error, 'Unhandled webview message error');
+      const messageText = toAppError(error, 'Unhandled webview message error').message;
       this.debug(`Message handler failed (${message.type}): ${messageText}`);
       if (this.store.getState().isStreaming) {
         this.store.batchUpdate(() => {

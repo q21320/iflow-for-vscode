@@ -1,10 +1,10 @@
-import { Conversation, ConversationState } from '../protocol';
+import { Conversation } from '../protocol';
 
-export function updateConversationById(
-  state: ConversationState,
+export function updateConversationById<TState extends { conversations: Conversation[] }>(
+  state: TState,
   conversationId: string,
   updater: (conversation: Conversation) => Conversation,
-): { nextState: ConversationState; updatedConversation: Conversation | null } {
+): { nextState: TState; updatedConversation: Conversation | null } {
   const index = state.conversations.findIndex((c) => c.id === conversationId);
   if (index === -1) {
     return { nextState: state, updatedConversation: null };
@@ -23,7 +23,7 @@ export function updateConversationById(
     nextState: {
       ...state,
       conversations,
-    },
+    } as TState,
     updatedConversation: updated,
   };
 }

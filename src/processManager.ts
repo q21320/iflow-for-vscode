@@ -1,14 +1,20 @@
 // Process lifecycle management for the iFlow CLI subprocess.
 
 import * as cp from 'child_process';
-import * as net from 'net';
-import WebSocket = require('ws');
 import { findIFlowPathCrossPlatform, resolveIFlowScriptCrossPlatform, deriveNodePathFromIFlow } from './cliDiscovery';
 import {
   PROCESS_FORCE_KILL_TIMEOUT_MS,
   PROCESS_WS_MAX_ATTEMPTS,
   PROCESS_WS_RETRY_INTERVAL_MS,
 } from './constants/runtime';
+import { findAvailablePort, isPortAvailable, resolveStartupPort } from './process/portDiscovery';
+import {
+  buildStartupFailureMessage,
+  extractManagedPort,
+  isAddressInUseError,
+  isReadySignal,
+} from './process/startupSignals';
+import { waitForWebSocketReadiness, type WebSocketFactory } from './process/webSocketReadinessProbe';
 
 // ── Process lifecycle constants ──────────────────────────────────────
 const PROCESS_STARTUP_TIMEOUT_MS = 30_000;
@@ -29,8 +35,6 @@ interface ProcessManagerConfig {
 }
 
 type SpawnFn = typeof cp.spawn;
-type WebSocketFactory = (url: string, options?: { handshakeTimeout?: number }) => WebSocket;
-
 interface ProcessManagerDependencies {
   spawn?: SpawnFn;
   createWebSocket?: WebSocketFactory;
@@ -54,9 +58,9 @@ export class ProcessManager {
     deps: ProcessManagerDependencies = {},
   ) {
     this.spawnProcess = deps.spawn ?? cp.spawn;
-    this.createWebSocket = deps.createWebSocket ?? ((url, options) => new WebSocket(url, undefined, options));
-    this.checkPortAvailable = deps.isPortAvailable ?? ((port) => this.isPortAvailable(port));
-    this.allocateAvailablePort = deps.findAvailablePort ?? (() => this.findAvailablePort());
+    this.createWebSocket = deps.createWebSocket ?? ((url, options) => this.createDefaultWebSocket(url, options));
+    this.checkPortAvailable = deps.isPortAvailable ?? isPortAvailable;
+    this.allocateAvailablePort = deps.findAvailablePort ?? findAvailablePort;
   }
 
   /** Whether a managed process is currently running. */
@@ -184,7 +188,10 @@ export class ProcessManager {
 
     let startupPort = port;
     if (autoPortFallback) {
-      startupPort = await this.resolveStartupPort(port);
+      startupPort = await resolveStartupPort(port, {
+        isPortAvailable: this.checkPortAvailable,
+        findAvailablePort: this.allocateAvailablePort,
+      });
       if (startupPort !== port) {
         this.log(`ACP configured port ${port} is busy; falling back to available port ${startupPort}`);
       }
@@ -199,7 +206,7 @@ export class ProcessManager {
         enableStream,
       );
     } catch (err: unknown) {
-      if (!autoPortFallback || !this.isAddressInUseError(err)) {
+      if (!autoPortFallback || !isAddressInUseError(err)) {
         throw err;
       }
 
@@ -274,7 +281,7 @@ export class ProcessManager {
       };
 
       const ingestOutput = (output: string) => {
-        const parsedPort = this.extractManagedPort(output);
+        const parsedPort = extractManagedPort(output);
         if (parsedPort !== null && parsedPort !== effectivePort) {
           effectivePort = parsedPort;
           this.log(`Detected managed ACP port from CLI output: ${effectivePort}`);
@@ -296,7 +303,7 @@ export class ProcessManager {
         }
         this.log(`[iFlow stdout] ${output}`);
         // Look for ready signal
-        if (this.isReadySignal(output)) {
+        if (isReadySignal(output)) {
           if (!started) {
             // Give it a moment to fully initialize
             setTimeout(() => settleResolve(), PROCESS_INIT_DELAY_MS);
@@ -313,7 +320,7 @@ export class ProcessManager {
         }
         this.log(`[iFlow stderr] ${output}`);
         // Some CLIs output ready messages to stderr
-        if (this.isReadySignal(output)) {
+        if (isReadySignal(output)) {
           if (!started) {
             setTimeout(() => settleResolve(), PROCESS_INIT_DELAY_MS);
           }
@@ -328,7 +335,7 @@ export class ProcessManager {
       this.managedProcess.on('exit', (code) => {
         this.log(`iFlow process exited with code: ${code}`);
         if (!started && !settled) {
-          settleReject(new Error(this.buildStartupFailureMessage(code, stdoutBuffer, stderrBuffer, port)));
+          settleReject(new Error(buildStartupFailureMessage(code, stdoutBuffer, stderrBuffer, port)));
         }
 
         // Process has exited; ensure cached state is reset.
@@ -347,89 +354,31 @@ export class ProcessManager {
       });
 
       // If no ready signal, try to connect via WebSocket to confirm server is ready
-      let wsTimeout: NodeJS.Timeout | null = null;
       const checkWebSocketReady = async () => {
-        for (let attempt = 1; attempt <= PROCESS_WS_MAX_ATTEMPTS; attempt++) {
-          if (started || settled || !this.managedProcess || this.managedProcess.killed) {
-            return;
+        const readiness = await waitForWebSocketReadiness({
+          createWebSocket: this.createWebSocket,
+          getWebSocketUrl: () => `ws://localhost:${effectivePort}/acp`,
+          maxAttempts: PROCESS_WS_MAX_ATTEMPTS,
+          retryIntervalMs: PROCESS_WS_RETRY_INTERVAL_MS,
+          handshakeTimeoutMs: PROCESS_WS_HANDSHAKE_TIMEOUT_MS,
+          connectionTimeoutMs: PROCESS_READY_FALLBACK_MS,
+          isCancelled: () => started || settled || !this.managedProcess || this.managedProcess.killed,
+          onFirstFailure: (message) => {
+            this.log(`[WebSocket check] Attempt 1 failed: ${message}`);
+          },
+        });
+
+        if (readiness.ready) {
+          if (!started) {
+            this.log(
+              `[process ready] WebSocket connection confirmed on port ${effectivePort} `
+              + `after ${readiness.attempts} attempt(s)`
+            );
+            settleResolve();
           }
-
-          try {
-            const wsUrl = `ws://localhost:${effectivePort}/acp`;
-            const ws = this.createWebSocket(wsUrl, { handshakeTimeout: PROCESS_WS_HANDSHAKE_TIMEOUT_MS });
-            const connectionResult = await new Promise<{ success: boolean; error?: Error }>((resolveWs) => {
-              let isResolved = false;
-
-              const cleanup = () => {
-                if (wsTimeout) {
-                  clearTimeout(wsTimeout);
-                  wsTimeout = null;
-                }
-                // Ensure WebSocket is fully closed
-                if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-                  ws.terminate();
-                }
-              };
-
-              ws.on('open', () => {
-                if (!isResolved) {
-                  isResolved = true;
-                  cleanup();
-                  resolveWs({ success: true });
-                }
-              });
-
-              ws.on('error', (err: Error) => {
-                if (!isResolved) {
-                  isResolved = true;
-                  cleanup();
-                  resolveWs({ success: false, error: err });
-                }
-              });
-
-              ws.on('close', () => {
-                if (!isResolved) {
-                  isResolved = true;
-                  cleanup();
-                  resolveWs({ success: false, error: new Error('Connection closed') });
-                }
-              });
-
-              // Timeout fallback
-              wsTimeout = setTimeout(() => {
-                if (!isResolved) {
-                  isResolved = true;
-                  cleanup();
-                  resolveWs({ success: false, error: new Error('WebSocket timeout') });
-                }
-              }, PROCESS_READY_FALLBACK_MS);
-            });
-
-            if (connectionResult.success) {
-              // Connection successful
-              if (!started) {
-                this.log(`[process ready] WebSocket connection confirmed on port ${effectivePort} after ${attempt} attempt(s)`);
-                settleResolve();
-              }
-              return;
-            } else if (this.log && attempt === 1) {
-              // Log first failure for debugging
-              this.log(`[WebSocket check] Attempt ${attempt} failed: ${connectionResult.error?.message}`);
-            }
-          } catch (err) {
-            // Log unexpected errors
-            if (this.log && attempt === 1) {
-              this.log(`[WebSocket check] Attempt ${attempt} error: ${err instanceof Error ? err.message : String(err)}`);
-            }
-          }
-
-          // Connection failed, wait and retry
-          if (attempt < PROCESS_WS_MAX_ATTEMPTS && !started) {
-            await new Promise(r => setTimeout(r, PROCESS_WS_RETRY_INTERVAL_MS));
-          }
+          return;
         }
 
-        // All attempts failed
         if (!started && !settled) {
           this.log(`[process warning] WebSocket not ready after ${PROCESS_WS_MAX_ATTEMPTS} attempts, proceeding anyway`);
           settleResolve();
@@ -446,10 +395,6 @@ export class ProcessManager {
       // Cleanup timeout if process exits early
       this.managedProcess.on('exit', () => {
         clearTimeout(initTimeout);
-        if (wsTimeout) {
-          clearTimeout(wsTimeout);
-          wsTimeout = null;
-        }
       });
     });
   }
@@ -478,125 +423,11 @@ export class ProcessManager {
     }
   }
 
-  private isReadySignal(output: string): boolean {
-    const normalized = output.toLowerCase();
-    return normalized.includes('listening')
-      || normalized.includes('ready')
-      || normalized.includes('started websocket service')
-      || normalized.includes('server started');
-  }
-
-  private isAddressInUseError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    const normalized = message.toLowerCase();
-    return normalized.includes('eaddrinuse')
-      || normalized.includes('address already in use')
-      || normalized.includes('failed to bind acp port');
-  }
-
-  private async resolveStartupPort(configuredPort: number): Promise<number> {
-    if (configuredPort <= 0 || configuredPort > 65535) {
-      return this.allocateAvailablePort();
-    }
-
-    const preferredAvailable = await this.checkPortAvailable(configuredPort);
-    if (preferredAvailable) {
-      return configuredPort;
-    }
-
-    return this.allocateAvailablePort();
-  }
-
-  private async isPortAvailable(port: number): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
-      const server = net.createServer();
-
-      const cleanup = () => {
-        server.removeAllListeners();
-      };
-
-      server.once('error', () => {
-        cleanup();
-        resolve(false);
-      });
-
-      server.once('listening', () => {
-        server.close(() => {
-          cleanup();
-          resolve(true);
-        });
-      });
-
-      server.listen(port, '127.0.0.1');
-    });
-  }
-
-  private async findAvailablePort(): Promise<number> {
-    return new Promise<number>((resolve, reject) => {
-      const server = net.createServer();
-
-      const cleanup = () => {
-        server.removeAllListeners();
-      };
-
-      server.once('error', (err: Error) => {
-        cleanup();
-        reject(err);
-      });
-
-      server.once('listening', () => {
-        const address = server.address();
-        const port = typeof address === 'object' && address ? address.port : null;
-        server.close(() => {
-          cleanup();
-          if (typeof port === 'number' && port > 0 && port <= 65535) {
-            resolve(port);
-          } else {
-            reject(new Error('Failed to resolve available ACP port'));
-          }
-        });
-      });
-
-      server.listen(0, '127.0.0.1');
-    });
-  }
-
-  private extractManagedPort(output: string): number | null {
-    const patterns = [
-      /\busing port[:\s]+(\d{2,5})\b/i,
-      /\bfound available port\s+(\d{2,5})\b/i,
-      /\blistening(?:\s+on)?(?:\s+port)?[:\s]+(\d{2,5})\b/i,
-    ];
-
-    for (const pattern of patterns) {
-      const match = pattern.exec(output);
-      if (!match) {
-        continue;
-      }
-      const parsed = Number.parseInt(match[1], 10);
-      if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
-        return parsed;
-      }
-    }
-    return null;
-  }
-
-  private buildStartupFailureMessage(
-    code: number | null,
-    stdoutBuffer: string[],
-    stderrBuffer: string[],
-    configuredPort: number,
-  ): string {
-    const combined = `${stdoutBuffer.join('')}\n${stderrBuffer.join('')}`.toLowerCase();
-    if (combined.includes('eaddrinuse') || combined.includes('address already in use')) {
-      return `iFlow process failed to bind ACP port ${configuredPort} because it is already in use. `
-        + 'Please close the conflicting process or change iflow.port.';
-    }
-
-    let errorMsg = `iFlow process exited immediately with code ${code}`;
-    if (code === 1) {
-      errorMsg += '. 可能的原因：--experimental-acp 参数不被支持，请检查 CLI 版本';
-    }
-    return errorMsg;
+  private createDefaultWebSocket(
+    url: string,
+    options?: { handshakeTimeout?: number },
+  ): ReturnType<WebSocketFactory> {
+    const WebSocketCtor = require('ws') as typeof import('ws');
+    return new WebSocketCtor(url, undefined, options);
   }
 }
