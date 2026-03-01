@@ -1,5 +1,6 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from "fs";
+import * as path from "path";
+import { isSubPath } from "../shared/pathUtils";
 
 export class PathPolicy {
   private allowedDirs: string[] = [];
@@ -27,28 +28,23 @@ export class PathPolicy {
   }
 
   ensureAllowedPath(rawPath: string): string {
-    const absolute = path.isAbsolute(rawPath) ? rawPath : path.resolve(this.baseDir, rawPath);
+    const absolute = path.isAbsolute(rawPath)
+      ? rawPath
+      : path.resolve(this.baseDir, rawPath);
     const canonical = this.canonicalizePath(absolute);
 
     if (this.allowedDirs.length === 0) {
-      throw new Error('Access denied: no allowed directories configured');
+      throw new Error("Access denied: no allowed directories configured");
     }
 
-    const allowed = this.allowedDirs.some((dir) => this.isSubPath(dir, canonical));
+    const allowed = this.allowedDirs.some((dir) => isSubPath(dir, canonical));
     if (!allowed) {
-      throw new Error(`Access denied: ${rawPath} is outside allowed directories`);
+      throw new Error(
+        `Access denied: ${rawPath} is outside allowed directories`,
+      );
     }
 
     return canonical;
-  }
-
-  private toComparablePath(inputPath: string): string {
-    return process.platform === 'win32' ? inputPath.toLowerCase() : inputPath;
-  }
-
-  private isSubPath(parent: string, child: string): boolean {
-    const rel = path.relative(this.toComparablePath(parent), this.toComparablePath(child));
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
   }
 
   private findNearestExistingPath(inputPath: string): string {

@@ -1,34 +1,36 @@
-import type { OutputBlock } from './stream';
+import type { OutputBlock } from "./stream";
 
-export type ConversationMode = 'default' | 'yolo' | 'plan' | 'smart';
+export type ConversationMode = "default" | "yolo" | "plan" | "smart";
 
 export const MODELS = [
-  'GLM-4.7',
-  'GLM-5',
-  'DeepSeek-V3.2',
-  'iFlow-ROME-30BA3B(Preview)',
-  'Qwen3-Coder-Plus',
-  'Kimi-K2-Thinking',
-  'MiniMax-M2.5',
-  'MiniMax-M2.1',
-  'Kimi-K2-0905',
-  'Kimi-K2.5'
+  "GLM-4.7",
+  "GLM-5",
+  "DeepSeek-V3.2",
+  "iFlow-ROME-30BA3B(Preview)",
+  "Qwen3-Coder-Plus",
+  "Kimi-K2-Thinking",
+  "MiniMax-M2.5",
+  "MiniMax-M2.1",
+  "Kimi-K2-0905",
+  "Kimi-K2.5",
 ] as const;
 
-export type ModelType = typeof MODELS[number];
+export type ModelType = (typeof MODELS)[number];
+
+export const DEFAULT_CONTEXT_SIZE = 128000;
 
 // Context window sizes per model (from iFlow CLI's model configuration)
 export const MODEL_CONTEXT_SIZES: Record<ModelType, number> = {
-  'GLM-4.7': 200000,
-  'GLM-5': 200000,
-  'DeepSeek-V3.2': 128000,
-  'iFlow-ROME-30BA3B(Preview)': 256000,
-  'Qwen3-Coder-Plus': 256000,
-  'Kimi-K2-Thinking': 256000,
-  'MiniMax-M2.5': 128000,
-  'MiniMax-M2.1': 128000,
-  'Kimi-K2-0905': 256000,
-  'Kimi-K2.5': 262144,
+  "GLM-4.7": 200000,
+  "GLM-5": 200000,
+  "DeepSeek-V3.2": 128000,
+  "iFlow-ROME-30BA3B(Preview)": 256000,
+  "Qwen3-Coder-Plus": 256000,
+  "Kimi-K2-Thinking": 256000,
+  "MiniMax-M2.5": 128000,
+  "MiniMax-M2.1": 128000,
+  "Kimi-K2-0905": 256000,
+  "Kimi-K2.5": 262144,
 };
 
 // Attached file
@@ -53,7 +55,7 @@ export interface IDEContext {
 // Message in conversation
 export interface Message {
   id: string;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string;
   blocks: OutputBlock[];
   attachedFiles: AttachedFile[];

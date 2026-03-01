@@ -18,3 +18,17 @@ export interface PendingPlanApproval {
   requestId: number;
   plan: string;
 }
+
+export type ApprovalOutcome = "allow" | "alwaysAllow" | "reject";
+
+export function isApprovalOutcome(
+  value: string | undefined,
+): value is ApprovalOutcome {
+  return value === "allow" || value === "alwaysAllow" || value === "reject";
+}
+
+export type PlanOption = "smart" | "default" | "keep";
+
+export function isPlanOption(value: string | undefined): value is PlanOption {
+  return value === "smart" || value === "default" || value === "keep";
+}

@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
 import {
   Conversation,
   ConversationState,
@@ -7,19 +7,19 @@ import {
   Message,
   AttachedFile,
   StreamChunk,
-} from './protocol';
-import { ContextUsage } from './store/contextUsageEstimator';
-import { ConversationRepository } from './store/conversationRepository';
-import { RuntimeStateStore } from './store/runtimeStateStore';
-import { ConversationService } from './store/conversationService';
+} from "./protocol";
+import { ContextUsage } from "./store/contextUsageEstimator";
+import { ConversationRepository } from "./store/conversationRepository";
+import { RuntimeStateStore } from "./store/runtimeStateStore";
+import { ConversationService } from "./store/conversationService";
 import {
   ConversationStoreOptions,
   PersistedConversationState,
   SavedConversationState,
   AppendAssistantOptions,
-} from './store/storeTypes';
+} from "./store/storeTypes";
 
-export { ConversationStoreOptions } from './store/storeTypes';
+export { ConversationStoreOptions } from "./store/storeTypes";
 
 export class ConversationStore {
   private readonly repository: ConversationRepository;
@@ -42,8 +42,7 @@ export class ConversationStore {
       conversations: saved?.conversations || [],
     };
 
-    const useRuntimeSnapshot = options.useRuntimeSnapshot ?? true;
-    this.runtimeStateStore = new RuntimeStateStore(saved, useRuntimeSnapshot);
+    this.runtimeStateStore = new RuntimeStateStore(saved);
     this.conversationService = new ConversationService(initialState, {
       onPersist: () => this.persist(),
       onChange: () => this.notifyChange(),
@@ -65,11 +64,12 @@ export class ConversationStore {
     return this.conversationService.getCurrentConversation();
   }
 
-  setCliStatus(available: boolean, version: string | null, diagnostics?: string): void {
+  setCliStatus(
+    available: boolean,
+    version: string | null,
+    diagnostics?: string,
+  ): void {
     this.runtimeStateStore.setCliStatus(available, version, diagnostics);
-    if (this.runtimeStateStore.shouldPersistLegacyCliState()) {
-      this.persist();
-    }
     this.notifyChange();
   }
 
@@ -131,7 +131,10 @@ export class ConversationStore {
     return this.conversationService.startAssistantMessage();
   }
 
-  appendToAssistantMessage(chunk: StreamChunk, options: AppendAssistantOptions = {}): void {
+  appendToAssistantMessage(
+    chunk: StreamChunk,
+    options: AppendAssistantOptions = {},
+  ): void {
     this.conversationService.appendToAssistantMessage(chunk, options);
   }
 
@@ -157,11 +160,10 @@ export class ConversationStore {
 
   private persist(): void {
     const persistedState = this.conversationService.getPersistedState();
-    const basePayload: SavedConversationState = {
+    const payload: SavedConversationState = {
       conversations: persistedState.conversations,
       currentId: persistedState.currentConversationId,
     };
-    const payload = this.runtimeStateStore.applyLegacyCliState(basePayload);
     this.repository.save(payload);
   }
 

@@ -1,6 +1,6 @@
-import * as assert from 'assert';
-import { AcpClient } from '../acpClient';
-import { InactivityGuard } from '../acp/inactivityGuard';
+import * as assert from "assert";
+import { AcpClient } from "../acpClient";
+import { InactivityGuard } from "../acp/inactivityGuard";
 
 class FakeTransport {
   connected = false;
@@ -36,27 +36,30 @@ class FakeProtocol {
     this.requests.push({ method, params });
 
     switch (method) {
-      case 'initialize':
+      case "initialize":
         return { protocolVersion: 1, isAuthenticated: false };
-      case 'authenticate':
-        return { methodId: 'iflow' };
-      case 'session/new':
-        return { sessionId: 'test-session-123' };
-      case 'session/load':
+      case "authenticate":
+        return { methodId: "iflow" };
+      case "session/new":
+        return { sessionId: "test-session-123" };
+      case "session/load":
         return {};
-      case 'session/set_mode':
+      case "session/set_mode":
         return { success: true, currentModeId: (params as any)?.modeId };
-      case 'session/set_model':
+      case "session/set_model":
         return { success: true, currentModelId: (params as any)?.modelId };
-      case 'session/set_think':
-        return { success: true, currentThinkEnabled: Boolean((params as any)?.thinkEnabled) };
-      case 'session/prompt':
+      case "session/set_think":
+        return {
+          success: true,
+          currentThinkEnabled: Boolean((params as any)?.thinkEnabled),
+        };
+      case "session/prompt":
         this.simulateUpdate({
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: 'Hello!' },
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Hello!" },
         });
-        return { stopReason: 'end_turn' };
-      case 'session/cancel':
+        return { stopReason: "end_turn" };
+      case "session/cancel":
         return {};
       default:
         return {};
@@ -64,7 +67,11 @@ class FakeProtocol {
   }
 
   async sendResult(_id: number, _result: unknown): Promise<void> {}
-  async sendError(_id: number, _code: number, _message: string): Promise<void> {}
+  async sendError(
+    _id: number,
+    _code: number,
+    _message: string,
+  ): Promise<void> {}
 
   onServerMethod(method: string, handler: Function): void {
     this.serverHandlers.set(method, handler);
@@ -85,13 +92,17 @@ class FakeProtocol {
   }
 
   simulateUpdate(update: Record<string, unknown>): void {
-    const handler = this.notificationHandlers.get('session/update');
+    const handler = this.notificationHandlers.get("session/update");
     if (handler) {
-      handler({ sessionId: 'test-session-123', update });
+      handler({ sessionId: "test-session-123", update });
     }
   }
 
-  async simulateServerMethod(method: string, id: number, params: unknown): Promise<unknown> {
+  async simulateServerMethod(
+    method: string,
+    id: number,
+    params: unknown,
+  ): Promise<unknown> {
     const handler = this.serverHandlers.get(method);
     if (!handler) {
       throw new Error(`No handler for ${method}`);
@@ -100,19 +111,19 @@ class FakeProtocol {
   }
 }
 
-suite('AcpClient', () => {
+suite("AcpClient", () => {
   let client: AcpClient;
   let fakeTransport: FakeTransport;
   let fakeProtocol: FakeProtocol;
 
   setup(() => {
-    client = new AcpClient();
     fakeTransport = new FakeTransport();
     fakeProtocol = new FakeProtocol();
 
-    // Inject fakes
-    (client as any)._createTransport = () => fakeTransport;
-    (client as any)._createProtocol = (_t: unknown) => fakeProtocol;
+    client = new AcpClient({
+      createTransport: () => fakeTransport as any,
+      createProtocol: () => fakeProtocol as any,
+    });
 
     // Skip settings file I/O in tests
     (client as any).updateIFlowCliModel = () => {};
@@ -137,32 +148,38 @@ suite('AcpClient', () => {
     }
   });
 
-  test('run sends ACP-compliant initialize/prompt payloads and streams chunks', async () => {
+  test("run sends ACP-compliant initialize/prompt payloads and streams chunks", async () => {
     let ended = false;
     let error: string | null = null;
     const chunks: any[] = [];
 
     const sessionId = await client.run(
       {
-        prompt: 'hello',
+        prompt: "hello",
         attachedFiles: [],
-        mode: 'smart',
+        mode: "smart",
         think: false,
-        model: 'GLM-4.7' as any,
-        cwd: '/tmp/workspace',
-        fileAllowedDirs: ['/tmp/workspace'],
+        model: "GLM-4.7" as any,
+        cwd: "/tmp/workspace",
+        fileAllowedDirs: ["/tmp/workspace"],
       },
       (chunk) => chunks.push(chunk),
-      () => { ended = true; },
-      (err) => { error = err; },
+      () => {
+        ended = true;
+      },
+      (err) => {
+        error = err;
+      },
     );
 
     assert.strictEqual(error, null);
     assert.strictEqual(ended, true);
-    assert.strictEqual(sessionId, 'test-session-123');
-    assert.ok(chunks.some(c => c.chunkType === 'text'));
+    assert.strictEqual(sessionId, "test-session-123");
+    assert.ok(chunks.some((c) => c.chunkType === "text"));
 
-    const initialize = fakeProtocol.requests.find(r => r.method === 'initialize');
+    const initialize = fakeProtocol.requests.find(
+      (r) => r.method === "initialize",
+    );
     assert.ok(initialize);
     assert.deepStrictEqual(initialize?.params, {
       protocolVersion: 1,
@@ -174,37 +191,47 @@ suite('AcpClient', () => {
       },
     });
 
-    const newSession = fakeProtocol.requests.find(r => r.method === 'session/new');
+    const newSession = fakeProtocol.requests.find(
+      (r) => r.method === "session/new",
+    );
     assert.ok(newSession);
     assert.deepStrictEqual((newSession?.params as any)?.settings, {
-      permission_mode: 'smart',
-      append_system_prompt: '',
-      add_dirs: ['/tmp/workspace'],
+      permission_mode: "smart",
+      append_system_prompt: "",
+      add_dirs: ["/tmp/workspace"],
     });
 
-    const prompt = fakeProtocol.requests.find(r => r.method === 'session/prompt');
+    const prompt = fakeProtocol.requests.find(
+      (r) => r.method === "session/prompt",
+    );
     assert.ok(prompt);
-    assert.strictEqual((prompt?.params as any)?.sessionId, 'test-session-123');
+    assert.strictEqual((prompt?.params as any)?.sessionId, "test-session-123");
     assert.ok(Array.isArray((prompt?.params as any)?.prompt));
-    assert.strictEqual((prompt?.params as any)?.prompt[0]?.type, 'text');
+    assert.strictEqual((prompt?.params as any)?.prompt[0]?.type, "text");
 
-    assert.ok(fakeProtocol.requests.some(r => r.method === 'session/set_mode'));
-    assert.ok(fakeProtocol.requests.some(r => r.method === 'session/set_model'));
-    assert.ok(fakeProtocol.requests.some(r => r.method === 'session/set_think'));
+    assert.ok(
+      fakeProtocol.requests.some((r) => r.method === "session/set_mode"),
+    );
+    assert.ok(
+      fakeProtocol.requests.some((r) => r.method === "session/set_model"),
+    );
+    assert.ok(
+      fakeProtocol.requests.some((r) => r.method === "session/set_think"),
+    );
   });
 
-  test('run emits usage chunk when session/prompt result includes usage metadata', async () => {
+  test("run emits usage chunk when session/prompt result includes usage metadata", async () => {
     const chunks: any[] = [];
 
     const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
     fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
-      if (method === 'session/prompt') {
+      if (method === "session/prompt") {
         fakeProtocol.simulateUpdate({
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: 'Hello!' },
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Hello!" },
         });
         return {
-          stopReason: 'end_turn',
+          stopReason: "end_turn",
           usageMetadata: {
             promptTokenCount: 321,
             candidatesTokenCount: 12,
@@ -217,37 +244,37 @@ suite('AcpClient', () => {
 
     await client.run(
       {
-        prompt: 'hello',
+        prompt: "hello",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: false,
-        model: 'GLM-4.7' as any,
+        model: "GLM-4.7" as any,
       },
       (chunk) => chunks.push(chunk),
       () => {},
       () => {},
     );
 
-    const usage = chunks.find((c) => c.chunkType === 'usage');
+    const usage = chunks.find((c) => c.chunkType === "usage");
     assert.ok(usage);
     assert.strictEqual(usage?.promptTokens, 321);
     assert.strictEqual(usage?.completionTokens, 12);
     assert.strictEqual(usage?.totalTokens, 333);
   });
 
-  test('run emits usage chunk when usage is on session/update envelope', async () => {
+  test("run emits usage chunk when usage is on session/update envelope", async () => {
     const chunks: any[] = [];
 
     const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
     fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
-      if (method === 'session/prompt') {
-        const handler = fakeProtocol.notificationHandlers.get('session/update');
+      if (method === "session/prompt") {
+        const handler = fakeProtocol.notificationHandlers.get("session/update");
         if (handler) {
           handler({
-            sessionId: 'test-session-123',
+            sessionId: "test-session-123",
             update: {
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: 'Hello!' },
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "Hello!" },
             },
             usageMetadata: {
               promptTokenCount: 777,
@@ -256,40 +283,40 @@ suite('AcpClient', () => {
             },
           });
         }
-        return { stopReason: 'end_turn' };
+        return { stopReason: "end_turn" };
       }
       return originalSendRequest(method, params);
     };
 
     await client.run(
       {
-        prompt: 'hello',
+        prompt: "hello",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: false,
-        model: 'GLM-4.7' as any,
+        model: "GLM-4.7" as any,
       },
       (chunk) => chunks.push(chunk),
       () => {},
       () => {},
     );
 
-    const usage = chunks.find((c) => c.chunkType === 'usage');
+    const usage = chunks.find((c) => c.chunkType === "usage");
     assert.ok(usage);
     assert.strictEqual(usage?.promptTokens, 777);
     assert.strictEqual(usage?.completionTokens, 21);
     assert.strictEqual(usage?.totalTokens, 798);
   });
 
-  test('run falls back to session/prompt result text when no session/update is emitted', async () => {
+  test("run falls back to session/prompt result text when no session/update is emitted", async () => {
     const chunks: any[] = [];
 
     const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
     fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
-      if (method === 'session/prompt') {
+      if (method === "session/prompt") {
         return {
-          stopReason: 'end_turn',
-          content: { type: 'text', text: 'Result-only fallback text.' },
+          stopReason: "end_turn",
+          content: { type: "text", text: "Result-only fallback text." },
         };
       }
       return originalSendRequest(method, params);
@@ -297,35 +324,35 @@ suite('AcpClient', () => {
 
     await client.run(
       {
-        prompt: 'hello',
+        prompt: "hello",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: false,
-        model: 'GLM-4.7' as any,
+        model: "GLM-4.7" as any,
       },
       (chunk) => chunks.push(chunk),
       () => {},
       () => {},
     );
 
-    const textChunks = chunks.filter((c) => c.chunkType === 'text');
+    const textChunks = chunks.filter((c) => c.chunkType === "text");
     assert.strictEqual(textChunks.length, 1);
-    assert.strictEqual(textChunks[0]?.content, 'Result-only fallback text.');
+    assert.strictEqual(textChunks[0]?.content, "Result-only fallback text.");
   });
 
-  test('run does not duplicate prompt-result text when session/update chunks exist', async () => {
+  test("run does not duplicate prompt-result text when session/update chunks exist", async () => {
     const chunks: any[] = [];
 
     const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
     fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
-      if (method === 'session/prompt') {
+      if (method === "session/prompt") {
         fakeProtocol.simulateUpdate({
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: 'Update text wins.' },
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Update text wins." },
         });
         return {
-          stopReason: 'end_turn',
-          content: { type: 'text', text: 'Result fallback should be ignored.' },
+          stopReason: "end_turn",
+          content: { type: "text", text: "Result fallback should be ignored." },
         };
       }
       return originalSendRequest(method, params);
@@ -333,23 +360,23 @@ suite('AcpClient', () => {
 
     await client.run(
       {
-        prompt: 'hello',
+        prompt: "hello",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: false,
-        model: 'GLM-4.7' as any,
+        model: "GLM-4.7" as any,
       },
       (chunk) => chunks.push(chunk),
       () => {},
       () => {},
     );
 
-    const textChunks = chunks.filter((c) => c.chunkType === 'text');
+    const textChunks = chunks.filter((c) => c.chunkType === "text");
     assert.strictEqual(textChunks.length, 1);
-    assert.strictEqual(textChunks[0]?.content, 'Update text wins.');
+    assert.strictEqual(textChunks[0]?.content, "Update text wins.");
   });
 
-  test('run recreates session and retries when prompt returns session not found', async () => {
+  test("run recreates session and retries when prompt returns session not found", async () => {
     let ended = false;
     let error: string | null = null;
     const chunks: any[] = [];
@@ -357,11 +384,13 @@ suite('AcpClient', () => {
 
     const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
     fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
-      if (method === 'session/prompt') {
+      if (method === "session/prompt") {
         promptCalls += 1;
         if (promptCalls === 1) {
           fakeProtocol.requests.push({ method, params });
-          throw new Error('[JSON-RPC -32600] Invalid request (data: {"details":"Session not found: stale-1"})');
+          throw new Error(
+            '[JSON-RPC -32600] Invalid request (data: {"details":"Session not found: stale-1"})',
+          );
         }
       }
       return originalSendRequest(method, params);
@@ -369,26 +398,33 @@ suite('AcpClient', () => {
 
     const sessionId = await client.run(
       {
-        prompt: 'hello',
+        prompt: "hello",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: false,
-        model: 'GLM-4.7' as any,
+        model: "GLM-4.7" as any,
       },
       (chunk) => chunks.push(chunk),
-      () => { ended = true; },
-      (err) => { error = err; },
+      () => {
+        ended = true;
+      },
+      (err) => {
+        error = err;
+      },
     );
 
     assert.strictEqual(error, null);
     assert.strictEqual(ended, true);
-    assert.strictEqual(sessionId, 'test-session-123');
+    assert.strictEqual(sessionId, "test-session-123");
     assert.strictEqual(promptCalls, 2);
-    assert.ok(fakeProtocol.requests.filter((r) => r.method === 'session/new').length >= 2);
-    assert.ok(chunks.some((c) => c.chunkType === 'text'));
+    assert.ok(
+      fakeProtocol.requests.filter((r) => r.method === "session/new").length >=
+        2,
+    );
+    assert.ok(chunks.some((c) => c.chunkType === "text"));
   });
 
-  test('run falls back to new session when stored sessionId no longer exists', async () => {
+  test("run falls back to new session when stored sessionId no longer exists", async () => {
     let ended = false;
     let error: string | null = null;
     const chunks: any[] = [];
@@ -396,11 +432,13 @@ suite('AcpClient', () => {
 
     const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
     fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
-      if (method === 'session/load') {
+      if (method === "session/load") {
         loadCalls += 1;
         if (loadCalls === 1) {
           fakeProtocol.requests.push({ method, params });
-          throw new Error('[JSON-RPC -32600] Invalid request (data: {"details":"Session not found: persisted-1"})');
+          throw new Error(
+            '[JSON-RPC -32600] Invalid request (data: {"details":"Session not found: persisted-1"})',
+          );
         }
       }
       return originalSendRequest(method, params);
@@ -408,58 +446,64 @@ suite('AcpClient', () => {
 
     const sessionId = await client.run(
       {
-        prompt: 'resume session',
+        prompt: "resume session",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: false,
-        model: 'GLM-4.7' as any,
-        sessionId: 'persisted-1',
+        model: "GLM-4.7" as any,
+        sessionId: "persisted-1",
       },
       (chunk) => chunks.push(chunk),
-      () => { ended = true; },
-      (err) => { error = err; },
+      () => {
+        ended = true;
+      },
+      (err) => {
+        error = err;
+      },
     );
 
     assert.strictEqual(error, null);
     assert.strictEqual(ended, true);
-    assert.strictEqual(sessionId, 'test-session-123');
+    assert.strictEqual(sessionId, "test-session-123");
     assert.strictEqual(loadCalls, 1);
-    assert.ok(fakeProtocol.requests.some((r) => r.method === 'session/new'));
-    assert.ok(chunks.some((c) => c.chunkType === 'text'));
+    assert.ok(fakeProtocol.requests.some((r) => r.method === "session/new"));
+    assert.ok(chunks.some((c) => c.chunkType === "text"));
   });
 
-  test('run sends thinkConfig when thinking is enabled', async () => {
+  test("run sends thinkConfig when thinking is enabled", async () => {
     await client.run(
       {
-        prompt: 'hello',
+        prompt: "hello",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: true,
-        model: 'GLM-4.7' as any,
+        model: "GLM-4.7" as any,
       },
       () => {},
       () => {},
       () => {},
     );
 
-    const thinkRequest = fakeProtocol.requests.find(r => r.method === 'session/set_think');
+    const thinkRequest = fakeProtocol.requests.find(
+      (r) => r.method === "session/set_think",
+    );
     assert.ok(thinkRequest);
     assert.strictEqual((thinkRequest?.params as any)?.thinkEnabled, true);
-    assert.strictEqual((thinkRequest?.params as any)?.thinkConfig, 'think');
+    assert.strictEqual((thinkRequest?.params as any)?.thinkConfig, "think");
   });
 
-  test('run succeeds without explicit fileAllowedDirs by falling back to cwd', async () => {
+  test("run succeeds without explicit fileAllowedDirs by falling back to cwd", async () => {
     let ended = false;
     let error: string | null = null;
 
     await client.run(
       {
-        prompt: 'fallback dirs',
+        prompt: "fallback dirs",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: false,
-        model: 'GLM-4.7' as any,
-        cwd: '/tmp/workspace',
+        model: "GLM-4.7" as any,
+        cwd: "/tmp/workspace",
       },
       () => {},
       () => {
@@ -474,7 +518,7 @@ suite('AcpClient', () => {
     assert.strictEqual(ended, true);
   });
 
-  test('run recovers when task subagent remains in_progress without follow-up updates', async function () {
+  test("run recovers when task subagent remains in_progress without follow-up updates", async function () {
     this.timeout(5000);
 
     const chunks: any[] = [];
@@ -482,8 +526,11 @@ suite('AcpClient', () => {
     let error: string | null = null;
     let promptCallCount = 0;
 
-    (client as any).runExecutor.deps.getConfig = <T>(key: string, defaultValue: T): T => {
-      if (key === 'subagentInactivityTimeoutMs') {
+    (client as any).runExecutor.deps.getConfig = <T>(
+      key: string,
+      defaultValue: T,
+    ): T => {
+      if (key === "subagentInactivityTimeoutMs") {
         return 30 as T;
       }
       return defaultValue;
@@ -496,36 +543,39 @@ suite('AcpClient', () => {
 
     const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
     fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
-      if (method === 'session/prompt') {
+      if (method === "session/prompt") {
         promptCallCount += 1;
 
         if (promptCallCount === 1) {
           fakeProtocol.simulateUpdate({
-            sessionUpdate: 'tool_call',
-            status: 'pending',
-            toolName: 'task',
-            toolCallId: 'call-task-1',
-            title: 'task',
+            sessionUpdate: "tool_call",
+            status: "pending",
+            toolName: "task",
+            toolCallId: "call-task-1",
+            title: "task",
           });
           fakeProtocol.simulateUpdate({
-            sessionUpdate: 'tool_call_update',
-            status: 'in_progress',
-            toolName: 'task',
-            toolCallId: 'call-task-1',
-            title: 'Launch agent(frontend-tester): Validate game',
+            sessionUpdate: "tool_call_update",
+            status: "in_progress",
+            toolName: "task",
+            toolCallId: "call-task-1",
+            title: "Launch agent(frontend-tester): Validate game",
             args: {
-              subagent_type: 'frontend-tester',
-              description: 'Validate game',
+              subagent_type: "frontend-tester",
+              description: "Validate game",
             },
           });
           return new Promise<unknown>(() => {});
         }
 
         fakeProtocol.simulateUpdate({
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: 'Recovered after stuck sub-agent cancellation.' },
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: "Recovered after stuck sub-agent cancellation.",
+          },
         });
-        return { stopReason: 'end_turn' };
+        return { stopReason: "end_turn" };
       }
 
       return originalSendRequest(method, params);
@@ -533,58 +583,81 @@ suite('AcpClient', () => {
 
     const sessionId = await client.run(
       {
-        prompt: 'validate red-alert game',
+        prompt: "validate red-alert game",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: false,
-        model: 'GLM-4.7' as any,
+        model: "GLM-4.7" as any,
       },
       (chunk) => chunks.push(chunk),
-      () => { ended = true; },
-      (err) => { error = err; },
+      () => {
+        ended = true;
+      },
+      (err) => {
+        error = err;
+      },
     );
 
     assert.strictEqual(error, null);
     assert.strictEqual(ended, true);
-    assert.strictEqual(sessionId, 'test-session-123');
-    assert.ok(promptCallCount >= 2, `expected at least 2 session/prompt calls, got ${promptCallCount}`);
-    assert.ok(fakeProtocol.requests.some((r) => r.method === 'session/cancel'));
+    assert.strictEqual(sessionId, "test-session-123");
     assert.ok(
-      chunks.some((chunk) =>
-        chunk.chunkType === 'warning'
-        && typeof chunk.message === 'string'
-        && chunk.message.includes('appears stuck')
+      promptCallCount >= 2,
+      `expected at least 2 session/prompt calls, got ${promptCallCount}`,
+    );
+    assert.ok(fakeProtocol.requests.some((r) => r.method === "session/cancel"));
+    assert.ok(
+      chunks.some(
+        (chunk) =>
+          chunk.chunkType === "warning" &&
+          typeof chunk.message === "string" &&
+          chunk.message.includes("appears stuck"),
       ),
     );
     assert.ok(
-      chunks.some((chunk) =>
-        chunk.chunkType === 'text'
-        && typeof chunk.content === 'string'
-        && chunk.content.includes('Recovered after stuck sub-agent cancellation.')
+      chunks.some(
+        (chunk) =>
+          chunk.chunkType === "text" &&
+          typeof chunk.content === "string" &&
+          chunk.content.includes(
+            "Recovered after stuck sub-agent cancellation.",
+          ),
       ),
     );
   });
 
-  test('permission server method emits tool_confirmation and uses server optionId', async () => {
+  test("permission server method emits tool_confirmation and uses server optionId", async () => {
     const chunks: any[] = [];
 
     const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
     fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
-      if (method === 'session/prompt') {
-        const waitPermission = fakeProtocol.simulateServerMethod('session/request_permission', 77, {
-          options: [
-            { optionId: 'proceed_once', kind: 'allow_once', name: 'Allow once' },
-            { optionId: 'proceed_always', kind: 'allow_always', name: 'Always allow' },
-          ],
-          toolCall: {
-            title: 'Write file',
-            toolName: 'write_file',
-            kind: 'edit',
+      if (method === "session/prompt") {
+        const waitPermission = fakeProtocol.simulateServerMethod(
+          "session/request_permission",
+          77,
+          {
+            options: [
+              {
+                optionId: "proceed_once",
+                kind: "allow_once",
+                name: "Allow once",
+              },
+              {
+                optionId: "proceed_always",
+                kind: "allow_always",
+                name: "Always allow",
+              },
+            ],
+            toolCall: {
+              title: "Write file",
+              toolName: "write_file",
+              kind: "edit",
+            },
           },
-        });
+        );
 
         setTimeout(() => {
-          void client.approveToolCall(77, 'allow');
+          void client.approveToolCall(77, "allow");
         }, 0);
 
         await waitPermission;
@@ -595,34 +668,40 @@ suite('AcpClient', () => {
 
     await client.run(
       {
-        prompt: 'hello',
+        prompt: "hello",
         attachedFiles: [],
-        mode: 'default',
+        mode: "default",
         think: false,
-        model: 'GLM-4.7' as any,
+        model: "GLM-4.7" as any,
       },
       (chunk) => chunks.push(chunk),
       () => {},
       () => {},
     );
 
-    const confirmation = chunks.find(c => c.chunkType === 'tool_confirmation');
+    const confirmation = chunks.find(
+      (c) => c.chunkType === "tool_confirmation",
+    );
     assert.ok(confirmation);
     assert.strictEqual(confirmation.requestId, 77);
-    assert.strictEqual(confirmation.toolName, 'write_file');
-    assert.strictEqual(confirmation.confirmationType, 'edit');
+    assert.strictEqual(confirmation.toolName, "write_file");
+    assert.strictEqual(confirmation.confirmationType, "edit");
   });
 
-  test('legacy _iflow/plan/exit server method emits plan_approval and resolves approval', async () => {
+  test("legacy _iflow/plan/exit server method emits plan_approval and resolves approval", async () => {
     const chunks: any[] = [];
     let resolvedPlanValue: unknown = null;
 
     const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
     fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
-      if (method === 'session/prompt') {
-        const waitPlan = fakeProtocol.simulateServerMethod('_iflow/plan/exit', 88, {
-          plan: '1. Design\n2. Build\n3. Verify',
-        });
+      if (method === "session/prompt") {
+        const waitPlan = fakeProtocol.simulateServerMethod(
+          "_iflow/plan/exit",
+          88,
+          {
+            plan: "1. Design\n2. Build\n3. Verify",
+          },
+        );
 
         setTimeout(() => {
           void client.approvePlan(88, true);
@@ -636,11 +715,11 @@ suite('AcpClient', () => {
 
     await client.run(
       {
-        prompt: 'make a plan',
+        prompt: "make a plan",
         attachedFiles: [],
-        mode: 'plan',
+        mode: "plan",
         think: false,
-        model: 'GLM-4.7' as any,
+        model: "GLM-4.7" as any,
       },
       (chunk) => chunks.push(chunk),
       () => {},
@@ -648,56 +727,56 @@ suite('AcpClient', () => {
     );
 
     assert.deepStrictEqual(resolvedPlanValue, { approved: true });
-    const planApproval = chunks.find((c) => c.chunkType === 'plan_approval');
+    const planApproval = chunks.find((c) => c.chunkType === "plan_approval");
     assert.ok(planApproval);
     assert.strictEqual(planApproval.requestId, 88);
-    assert.strictEqual(planApproval.plan, '1. Design\n2. Build\n3. Verify');
+    assert.strictEqual(planApproval.plan, "1. Design\n2. Build\n3. Verify");
   });
 
-  test('approveToolCall maps allow/alwaysAllow to server-provided option IDs', async () => {
+  test("approveToolCall maps allow/alwaysAllow to server-provided option IDs", async () => {
     let allowValue: unknown = null;
     let alwaysValue: unknown = null;
 
     (client as any).pendingPermissions = new Map();
     (client as any).pendingPermissions.set(42, {
-      kind: 'permission',
+      kind: "permission",
       resolve: (value: unknown) => {
         allowValue = value;
       },
       options: [
-        { optionId: 'allow-once-id', kind: 'allow_once' },
-        { optionId: 'allow-always-id', kind: 'allow_always' },
+        { optionId: "allow-once-id", kind: "allow_once" },
+        { optionId: "allow-always-id", kind: "allow_always" },
       ],
     });
 
-    await client.approveToolCall(42, 'allow');
+    await client.approveToolCall(42, "allow");
     assert.deepStrictEqual(allowValue, {
-      outcome: { outcome: 'selected', optionId: 'allow-once-id' },
+      outcome: { outcome: "selected", optionId: "allow-once-id" },
     });
 
     (client as any).pendingPermissions.set(43, {
-      kind: 'permission',
+      kind: "permission",
       resolve: (value: unknown) => {
         alwaysValue = value;
       },
       options: [
-        { optionId: 'allow-once-id', kind: 'allow_once' },
-        { optionId: 'allow-always-id', kind: 'allow_always' },
+        { optionId: "allow-once-id", kind: "allow_once" },
+        { optionId: "allow-always-id", kind: "allow_always" },
       ],
     });
 
-    await client.approveToolCall(43, 'alwaysAllow');
+    await client.approveToolCall(43, "alwaysAllow");
     assert.deepStrictEqual(alwaysValue, {
-      outcome: { outcome: 'selected', optionId: 'allow-always-id' },
+      outcome: { outcome: "selected", optionId: "allow-always-id" },
     });
   });
 
-  test('rejectToolCall resolves pending permission with cancelled outcome', async () => {
+  test("rejectToolCall resolves pending permission with cancelled outcome", async () => {
     let resolvedValue: unknown = null;
 
     (client as any).pendingPermissions = new Map();
     (client as any).pendingPermissions.set(44, {
-      kind: 'permission',
+      kind: "permission",
       resolve: (value: unknown) => {
         resolvedValue = value;
       },
@@ -705,30 +784,32 @@ suite('AcpClient', () => {
     });
 
     await client.rejectToolCall(44);
-    assert.deepStrictEqual(resolvedValue, { outcome: { outcome: 'cancelled' } });
+    assert.deepStrictEqual(resolvedValue, {
+      outcome: { outcome: "cancelled" },
+    });
   });
 
-  test('answerQuestions resolves pending question request', async () => {
+  test("answerQuestions resolves pending question request", async () => {
     let resolvedValue: unknown = null;
 
     (client as any).pendingPermissions = new Map();
     (client as any).pendingPermissions.set(45, {
-      kind: 'question',
+      kind: "question",
       resolve: (value: unknown) => {
         resolvedValue = value;
       },
     });
 
-    await client.answerQuestions(45, { q1: 'yes' });
-    assert.deepStrictEqual(resolvedValue, { answers: { q1: 'yes' } });
+    await client.answerQuestions(45, { q1: "yes" });
+    assert.deepStrictEqual(resolvedValue, { answers: { q1: "yes" } });
   });
 
-  test('approvePlan resolves pending plan request', async () => {
+  test("approvePlan resolves pending plan request", async () => {
     let resolvedValue: unknown = null;
 
     (client as any).pendingPermissions = new Map();
     (client as any).pendingPermissions.set(46, {
-      kind: 'plan',
+      kind: "plan",
       resolve: (value: unknown) => {
         resolvedValue = value;
       },
@@ -738,15 +819,76 @@ suite('AcpClient', () => {
     assert.deepStrictEqual(resolvedValue, { approved: true });
   });
 
-  test('cancel sends session/cancel with sessionId', async () => {
-    (client as any).protocol = fakeProtocol;
-    (client as any).isConnected = true;
-    (client as any).sessionId = 'test-session-123';
+  test("cancel sends session/cancel with sessionId", async () => {
+    const coordinator = (client as any).sessionCoordinator;
+    coordinator.setConnectionForTests({
+      protocol: fakeProtocol,
+      isConnected: true,
+      sessionId: "test-session-123",
+    });
 
     await client.cancel();
 
-    const cancelReq = fakeProtocol.requests.find(r => r.method === 'session/cancel');
+    const cancelReq = fakeProtocol.requests.find(
+      (r) => r.method === "session/cancel",
+    );
     assert.ok(cancelReq);
-    assert.deepStrictEqual(cancelReq?.params, { sessionId: 'test-session-123' });
+    assert.deepStrictEqual(cancelReq?.params, {
+      sessionId: "test-session-123",
+    });
+  });
+
+  test("oauth-iflow is preferred over iflow even when selectedAuthType is 'iflow'", async () => {
+    // Reproduce the bug: when ~/.iflow/settings.json has selectedAuthType="iflow",
+    // the extension was authenticating with "iflow" (API-key auth) before "oauth-iflow",
+    // causing the CLI to return empty responses because no OAuth session was established.
+    // The fix: selectedAuthType is only honoured when it is a custom/external auth type,
+    // never for the built-in "iflow" method.
+
+    // Override settingsRepository to simulate selectedAuthType="iflow" in settings
+    (client as any).settingsRepository = {
+      getSelectedAuthType: () => "iflow",
+      updateModel: () => {},
+      updateBaseUrl: () => {},
+    };
+
+    // Expose both auth methods so the resolution logic is exercised
+    const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
+    fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
+      if (method === "initialize") {
+        return {
+          isAuthenticated: false,
+          authMethods: [{ id: "iflow" }, { id: "oauth-iflow" }],
+        };
+      }
+      return originalSendRequest(method, params);
+    };
+
+    await client.run(
+      {
+        prompt: "hello",
+        attachedFiles: [],
+        mode: "default",
+        think: false,
+        model: "GLM-4.7" as any,
+      },
+      () => {},
+      () => {},
+      () => {},
+    );
+
+    // The first authenticate call must be for "oauth-iflow", not "iflow"
+    const authRequests = fakeProtocol.requests.filter(
+      (r) => r.method === "authenticate",
+    );
+    assert.ok(
+      authRequests.length >= 1,
+      "Expected at least one authenticate call",
+    );
+    assert.strictEqual(
+      (authRequests[0]?.params as { methodId?: string } | undefined)?.methodId,
+      "oauth-iflow",
+      "oauth-iflow must be tried before iflow even when selectedAuthType='iflow'",
+    );
   });
 });

@@ -8,8 +8,8 @@ export interface CliAvailabilityResult {
 export class CliStatusService {
   private static readonly CLI_CHECK_SUCCESS_TTL_MS = 2 * 60 * 1000;
   private static readonly CLI_CHECK_FAILURE_TTL_MS = 15 * 1000;
-  private static sharedCliCheckCache: { result: CliAvailabilityResult; checkedAt: number } | null = null;
-  private static sharedCliCheckInFlight: Promise<CliAvailabilityResult> | null = null;
+  private cache: { result: CliAvailabilityResult; checkedAt: number } | null = null;
+  private inFlight: Promise<CliAvailabilityResult> | null = null;
 
   constructor(
     private readonly client: AcpClient,
@@ -17,59 +17,59 @@ export class CliStatusService {
     private readonly debug: (message: string) => void,
   ) {}
 
-  static invalidateSharedCliCheck(): void {
-    this.sharedCliCheckCache = null;
-    this.sharedCliCheckInFlight = null;
+  invalidateCache(): void {
+    this.cache = null;
+    this.inFlight = null;
   }
 
-  static cacheCliCheckResult(result: CliAvailabilityResult): void {
-    this.sharedCliCheckCache = { result, checkedAt: Date.now() };
+  cacheResult(result: CliAvailabilityResult): void {
+    this.cache = { result, checkedAt: Date.now() };
   }
 
   async check(forceRefresh = false): Promise<void> {
-    const result = await this.getSharedCliAvailability(forceRefresh);
+    const result = await this.getCliAvailability(forceRefresh);
     this.debug(`Setting CLI status: available=${result.version !== null}, diagnostics=${result.diagnostics}`);
     this.setStatus(result);
   }
 
-  private async getSharedCliAvailability(forceRefresh = false): Promise<CliAvailabilityResult> {
+  private async getCliAvailability(forceRefresh = false): Promise<CliAvailabilityResult> {
     if (forceRefresh) {
       this.debug('CLI availability check: force refresh requested');
-      CliStatusService.invalidateSharedCliCheck();
+      this.invalidateCache();
     }
 
-    if (CliStatusService.isSharedCliCheckFresh() && CliStatusService.sharedCliCheckCache) {
-      this.debug('CLI availability check: using shared cache');
-      return CliStatusService.sharedCliCheckCache.result;
+    if (this.isCacheFresh() && this.cache) {
+      this.debug('CLI availability check: using cache');
+      return this.cache.result;
     }
 
-    if (CliStatusService.sharedCliCheckInFlight) {
+    if (this.inFlight) {
       this.debug('CLI availability check: awaiting in-flight check');
-      return CliStatusService.sharedCliCheckInFlight;
+      return this.inFlight;
     }
 
     this.debug('CLI availability check: running client.checkAvailability()');
-    CliStatusService.sharedCliCheckInFlight = this.client.checkAvailability()
+    this.inFlight = this.client.checkAvailability()
       .then((result) => {
         this.debug(`CLI availability check complete: available=${result.version !== null}, version=${result.version ?? 'n/a'}`);
-        CliStatusService.cacheCliCheckResult(result);
+        this.cacheResult(result);
         return result;
       })
       .finally(() => {
-        CliStatusService.sharedCliCheckInFlight = null;
+        this.inFlight = null;
       });
 
-    return CliStatusService.sharedCliCheckInFlight;
+    return this.inFlight;
   }
 
-  private static isSharedCliCheckFresh(): boolean {
-    if (!this.sharedCliCheckCache) {
+  private isCacheFresh(): boolean {
+    if (!this.cache) {
       return false;
     }
 
-    const ttl = this.sharedCliCheckCache.result.version !== null
-      ? this.CLI_CHECK_SUCCESS_TTL_MS
-      : this.CLI_CHECK_FAILURE_TTL_MS;
-    return Date.now() - this.sharedCliCheckCache.checkedAt < ttl;
+    const ttl = this.cache.result.version !== null
+      ? CliStatusService.CLI_CHECK_SUCCESS_TTL_MS
+      : CliStatusService.CLI_CHECK_FAILURE_TTL_MS;
+    return Date.now() - this.cache.checkedAt < ttl;
   }
 }

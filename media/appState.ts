@@ -3,9 +3,13 @@ import type {
   ConversationState,
   IDEContext,
   RoundFileChangeSummary,
-} from '../src/protocol';
-import type { StreamStatusSnapshot } from '../src/streamStatusUtils';
-import type { PendingConfirmation, PendingPlanApproval, PendingQuestion } from './panels/panelTypes';
+} from "../src/protocol";
+import type { StreamStatusSnapshot } from "../src/streamStatusUtils";
+import type {
+  PendingConfirmation,
+  PendingPlanApproval,
+  PendingQuestion,
+} from "./panels/panelTypes";
 
 export type IDEContextDismissed = { activeFile: boolean; selection: boolean };
 
@@ -17,12 +21,18 @@ export class AppState {
   streamStatus: StreamStatusSnapshot | null = null;
 
   showConversationPanel = false;
-  conversationSearch = '';
+  conversationSearch = "";
   showModeMenu = false;
 
   ideContext: IDEContext = { activeFile: null, selection: null };
-  ideContextDismissed: IDEContextDismissed = { activeFile: false, selection: false };
-  latestRoundChangesByConversationId = new Map<string, RoundFileChangeSummary>();
+  ideContextDismissed: IDEContextDismissed = {
+    activeFile: false,
+    selection: false,
+  };
+  latestRoundChangesByConversationId = new Map<
+    string,
+    RoundFileChangeSummary
+  >();
 
   clearInputOnNextRender = false;
 
@@ -42,11 +52,26 @@ export class AppState {
     return this.state?.conversations.find((c) => c.id === currentId) || null;
   }
 
-  getWorkspaceFolderName(conversation: Conversation | null): string | undefined {
+  getWorkspaceFolderName(
+    conversation: Conversation | null,
+  ): string | undefined {
     if (!conversation?.workspaceFolderUri || !this.state?.workspaceFolders) {
       return undefined;
     }
-    return this.state.workspaceFolders.find((f) => f.uri === conversation.workspaceFolderUri)?.name;
+    return this.state.workspaceFolders.find(
+      (f) => f.uri === conversation.workspaceFolderUri,
+    )?.name;
+  }
+
+  getCwd(conversation: Conversation | null): string | undefined {
+    if (conversation?.workspaceFolderUri) {
+      return conversation.workspaceFolderUri;
+    }
+    const folders = this.state?.workspaceFolders;
+    if (folders && folders.length > 0) {
+      return folders[0].uri;
+    }
+    return undefined;
   }
 
   consumeClearInputOnNextRender(): boolean {

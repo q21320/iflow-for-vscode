@@ -1,9 +1,9 @@
-import * as vscode from 'vscode';
-import { WebviewHandler } from './webviewHandler';
+import * as vscode from "vscode";
+import { WebviewHandler } from "./webviewHandler";
 
 export class IFlowPanel {
   public static currentPanel: IFlowPanel | undefined;
-  private static readonly viewType = 'iflowPanel';
+  private static readonly viewType = "iflowPanel";
 
   private readonly panel: vscode.WebviewPanel;
   private readonly handler: WebviewHandler;
@@ -11,7 +11,6 @@ export class IFlowPanel {
   public static createOrShow(
     extensionUri: vscode.Uri,
     globalState: vscode.Memento,
-    secrets: vscode.SecretStorage
   ): void {
     // If we already have a panel, show it
     if (IFlowPanel.currentPanel) {
@@ -22,24 +21,24 @@ export class IFlowPanel {
     // Otherwise, create a new panel beside the current editor (right side)
     const panel = vscode.window.createWebviewPanel(
       IFlowPanel.viewType,
-      'IFlow',
+      "IFlow",
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,
-        enableCommandUris: ['workbench.action.openSettings'],
+        enableCommandUris: ["workbench.action.openSettings"],
         retainContextWhenHidden: true,
         localResourceRoots: [
-          vscode.Uri.joinPath(extensionUri, 'dist'),
-          vscode.Uri.joinPath(extensionUri, 'media')
-        ]
-      }
+          vscode.Uri.joinPath(extensionUri, "dist"),
+          vscode.Uri.joinPath(extensionUri, "media"),
+        ],
+      },
     );
 
-    IFlowPanel.currentPanel = new IFlowPanel(panel, extensionUri, globalState, secrets);
+    IFlowPanel.currentPanel = new IFlowPanel(panel, extensionUri, globalState);
 
     // Auto-lock the editor group so the panel stays pinned
     setTimeout(() => {
-      vscode.commands.executeCommand('workbench.action.lockEditorGroup');
+      vscode.commands.executeCommand("workbench.action.lockEditorGroup");
     }, 300);
   }
 
@@ -47,14 +46,17 @@ export class IFlowPanel {
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     globalState: vscode.Memento,
-    secrets: vscode.SecretStorage
   ) {
     this.panel = panel;
 
     // Set the panel tab icon to iflow_favicon.svg
-    this.panel.iconPath = vscode.Uri.joinPath(extensionUri, 'media', 'iflow_favicon.svg');
+    this.panel.iconPath = vscode.Uri.joinPath(
+      extensionUri,
+      "media",
+      "iflow_favicon.svg",
+    );
 
-    this.handler = new WebviewHandler(extensionUri, globalState, secrets);
+    this.handler = new WebviewHandler(extensionUri, globalState);
 
     // Bind handler to this webview
     this.handler.bindWebview(panel.webview);

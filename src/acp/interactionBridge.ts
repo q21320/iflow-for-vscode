@@ -1,9 +1,16 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import { StreamChunk } from '../protocol';
-import { AcpProtocol } from '../acpProtocol';
-import { PendingInteraction, PendingPlan, PendingQuestion, PendingPermission, PermissionOption } from './types';
-import { isObject } from '../shared/typeGuards';
+import * as fs from "fs";
+import * as path from "path";
+import { StreamChunk } from "../protocol";
+import { AcpProtocol } from "../acpProtocol";
+import {
+  PendingInteraction,
+  PendingPlan,
+  PendingQuestion,
+  PendingPermission,
+  PermissionOption,
+} from "./types";
+import { isObject } from "../shared/typeGuards";
+import { normalizeErrorMessage } from "../errorUtils";
 
 interface ToolCallParams {
   toolCall?: {
@@ -42,7 +49,10 @@ interface InteractionBridgeOptions {
 
 export class InteractionBridge {
   private pendingInteractions = new Map<number, PendingInteraction>();
-  private readonly timeoutHandles = new Map<number, ReturnType<typeof setTimeout>>();
+  private readonly timeoutHandles = new Map<
+    number,
+    ReturnType<typeof setTimeout>
+  >();
   private readonly createdAt = new Map<number, number>();
   private readonly interactionTimeoutMs: number;
   private readonly enableLegacyQuestionBridge: boolean;
@@ -55,11 +65,13 @@ export class InteractionBridge {
     options: InteractionBridgeOptions = {},
   ) {
     this.interactionTimeoutMs = options.interactionTimeoutMs ?? 120_000;
-    this.enableLegacyQuestionBridge = options.enableLegacyQuestionBridge ?? false;
-    this.enableLegacyPlanExitBridge = options.enableLegacyPlanExitBridge ?? false;
+    this.enableLegacyQuestionBridge =
+      options.enableLegacyQuestionBridge ?? false;
+    this.enableLegacyPlanExitBridge =
+      options.enableLegacyPlanExitBridge ?? false;
   }
 
-  clearPendingInteractions(reason = 'interaction bridge reset'): void {
+  clearPendingInteractions(reason = "interaction bridge reset"): void {
     for (const [id, pending] of this.pendingInteractions.entries()) {
       this.clearTimer(id);
       this.resolveCancelled(id, pending, reason);
@@ -75,8 +87,10 @@ export class InteractionBridge {
   }
 
   // Backward-compat test hook.
-  replacePendingInteractionsForTests(map: Map<number, PendingInteraction>): void {
-    this.clearPendingInteractions('test map replaced');
+  replacePendingInteractionsForTests(
+    map: Map<number, PendingInteraction>,
+  ): void {
+    this.clearPendingInteractions("test map replaced");
     this.pendingInteractions = map;
 
     const now = Date.now();
@@ -87,23 +101,24 @@ export class InteractionBridge {
 
   registerServerHandlers(protocol: AcpProtocol): void {
     protocol.onServerMethod(
-      'session/request_permission',
+      "session/request_permission",
       async (id: number, params: unknown) => {
         const toolParams = (isObject(params) ? params : {}) as ToolCallParams;
-        const toolName = toolParams.toolCall?.toolName
-          ?? toolParams.toolCall?.title
-          ?? 'unknown';
+        const toolName =
+          toolParams.toolCall?.toolName ??
+          toolParams.toolCall?.title ??
+          "unknown";
         this.emitChunk({
-          chunkType: 'tool_confirmation',
+          chunkType: "tool_confirmation",
           requestId: id,
           toolName,
           description: toolParams.toolCall?.title ?? toolName,
-          confirmationType: toolParams.toolCall?.kind ?? 'other',
+          confirmationType: toolParams.toolCall?.kind ?? "other",
         });
 
         return new Promise((resolve) => {
           const pending: PendingPermission = {
-            kind: 'permission',
+            kind: "permission",
             resolve,
             options: toolParams.options ?? [],
           };
@@ -114,27 +129,29 @@ export class InteractionBridge {
 
     if (this.enableLegacyQuestionBridge) {
       protocol.onServerMethod(
-        '_iflow/user/questions',
+        "_iflow/user/questions",
         async (id: number, params: unknown) => {
-          const questionParams = (isObject(params) ? params : {}) as QuestionParams;
+          const questionParams = (
+            isObject(params) ? params : {}
+          ) as QuestionParams;
           const mappedQuestions = (questionParams.questions ?? []).map((q) => ({
-            question: q.question ?? '',
-            header: q.header ?? 'Question',
+            question: q.question ?? "",
+            header: q.header ?? "Question",
             options: (q.options ?? []).map((opt) => ({
-              label: opt.label ?? '',
-              description: opt.description ?? '',
+              label: opt.label ?? "",
+              description: opt.description ?? "",
             })),
             multiSelect: q.multiSelect ?? false,
           }));
 
           this.emitChunk({
-            chunkType: 'user_question',
+            chunkType: "user_question",
             requestId: id,
             questions: mappedQuestions,
           });
 
           return new Promise((resolve) => {
-            const pending: PendingQuestion = { kind: 'question', resolve };
+            const pending: PendingQuestion = { kind: "question", resolve };
             this.registerPendingInteraction(id, pending);
           });
         },
@@ -143,18 +160,18 @@ export class InteractionBridge {
 
     if (this.enableLegacyPlanExitBridge) {
       protocol.onServerMethod(
-        '_iflow/plan/exit',
+        "_iflow/plan/exit",
         async (id: number, params: unknown) => {
           const planParams = (isObject(params) ? params : {}) as PlanParams;
 
           this.emitChunk({
-            chunkType: 'plan_approval',
+            chunkType: "plan_approval",
             requestId: id,
-            plan: planParams.plan ?? '',
+            plan: planParams.plan ?? "",
           });
 
           return new Promise((resolve) => {
-            const pending: PendingPlan = { kind: 'plan', resolve };
+            const pending: PendingPlan = { kind: "plan", resolve };
             this.registerPendingInteraction(id, pending);
           });
         },
@@ -162,18 +179,18 @@ export class InteractionBridge {
     }
 
     protocol.onServerMethod(
-      'fs/read_text_file',
+      "fs/read_text_file",
       async (_id: number, params: unknown) => {
         try {
-          if (!isObject(params) || typeof params.path !== 'string') {
-            return { error: 'Invalid read_text_file params' };
+          if (!isObject(params) || typeof params.path !== "string") {
+            return { error: "Invalid read_text_file params" };
           }
 
           const safePath = this.ensureAllowedPath(params.path);
-          const content = fs.readFileSync(safePath, 'utf-8');
+          const content = await fs.promises.readFile(safePath, "utf-8");
           return { content };
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = normalizeErrorMessage(err);
           this.log(`fs/read_text_file failed: ${message}`);
           return { error: message };
         }
@@ -181,19 +198,23 @@ export class InteractionBridge {
     );
 
     protocol.onServerMethod(
-      'fs/write_text_file',
+      "fs/write_text_file",
       async (_id: number, params: unknown) => {
         try {
-          if (!isObject(params) || typeof params.path !== 'string' || typeof params.content !== 'string') {
-            return { error: 'Invalid write_text_file params' };
+          if (
+            !isObject(params) ||
+            typeof params.path !== "string" ||
+            typeof params.content !== "string"
+          ) {
+            return { error: "Invalid write_text_file params" };
           }
 
           const safePath = this.ensureAllowedPath(params.path);
-          fs.mkdirSync(path.dirname(safePath), { recursive: true });
-          fs.writeFileSync(safePath, params.content, 'utf-8');
+          await fs.promises.mkdir(path.dirname(safePath), { recursive: true });
+          await fs.promises.writeFile(safePath, params.content, "utf-8");
           return null;
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = normalizeErrorMessage(err);
           this.log(`fs/write_text_file failed: ${message}`);
           return { error: message };
         }
@@ -202,38 +223,40 @@ export class InteractionBridge {
   }
 
   async approveToolCall(requestId: number, outcome: string): Promise<void> {
-    const pending = this.consumePending(requestId, 'permission');
+    const pending = this.consumePending(requestId, "permission");
     if (!pending) {
       return;
     }
 
     const optionId = this.pickPermissionOptionId(
       pending.options,
-      outcome === 'alwaysAllow' ? ['allow_always', 'allow_once'] : ['allow_once', 'allow_always'],
+      outcome === "alwaysAllow"
+        ? ["allow_always", "allow_once"]
+        : ["allow_once", "allow_always"],
     );
 
     if (optionId) {
-      pending.resolve({ outcome: { outcome: 'selected', optionId } });
+      pending.resolve({ outcome: { outcome: "selected", optionId } });
       return;
     }
 
-    pending.resolve({ outcome: { outcome: 'cancelled' } });
+    pending.resolve({ outcome: { outcome: "cancelled" } });
   }
 
   async rejectToolCall(requestId: number): Promise<void> {
-    const pending = this.consumePending(requestId, 'permission');
+    const pending = this.consumePending(requestId, "permission");
     if (!pending) {
       return;
     }
 
-    pending.resolve({ outcome: { outcome: 'cancelled' } });
+    pending.resolve({ outcome: { outcome: "cancelled" } });
   }
 
   async answerQuestions(
     requestId: number,
     answers: Record<string, string | string[]>,
   ): Promise<void> {
-    const pending = this.consumePending(requestId, 'question');
+    const pending = this.consumePending(requestId, "question");
     if (!pending) {
       return;
     }
@@ -242,7 +265,7 @@ export class InteractionBridge {
   }
 
   async approvePlan(requestId: number, approved: boolean): Promise<void> {
-    const pending = this.consumePending(requestId, 'plan');
+    const pending = this.consumePending(requestId, "plan");
     if (!pending) {
       return;
     }
@@ -250,11 +273,18 @@ export class InteractionBridge {
     pending.resolve({ approved });
   }
 
-  private registerPendingInteraction(id: number, pending: PendingInteraction): void {
+  private registerPendingInteraction(
+    id: number,
+    pending: PendingInteraction,
+  ): void {
     const existing = this.pendingInteractions.get(id);
     if (existing) {
       this.clearTimer(id);
-      this.resolveCancelled(id, existing, `replaced by newer interaction #${id}`);
+      this.resolveCancelled(
+        id,
+        existing,
+        `replaced by newer interaction #${id}`,
+      );
     }
 
     this.pendingInteractions.set(id, pending);
@@ -280,9 +310,9 @@ export class InteractionBridge {
     const elapsed = Date.now() - startedAt;
     const message = `Interaction request #${id} (${pending.kind}) timed out after ${elapsed}ms`;
     this.log(message);
-    this.emitChunk({ chunkType: 'warning', message });
+    this.emitChunk({ chunkType: "warning", message });
 
-    this.resolveCancelled(id, pending, 'interaction timeout');
+    this.resolveCancelled(id, pending, "interaction timeout");
   }
 
   private clearTimer(id: number): void {
@@ -293,7 +323,7 @@ export class InteractionBridge {
     }
   }
 
-  private consumePending<TKind extends PendingInteraction['kind']>(
+  private consumePending<TKind extends PendingInteraction["kind"]>(
     id: number,
     kind: TKind,
   ): Extract<PendingInteraction, { kind: TKind }> | null {
@@ -308,30 +338,41 @@ export class InteractionBridge {
     return pending as Extract<PendingInteraction, { kind: TKind }>;
   }
 
-  private resolveCancelled(id: number, pending: PendingInteraction, reason: string): void {
+  private resolveCancelled(
+    id: number,
+    pending: PendingInteraction,
+    reason: string,
+  ): void {
     try {
       switch (pending.kind) {
-        case 'permission':
-          pending.resolve({ outcome: { outcome: 'cancelled' } });
+        case "permission":
+          pending.resolve({ outcome: { outcome: "cancelled" } });
           break;
-        case 'question':
+        case "question":
           pending.resolve({ answers: {} });
           break;
-        case 'plan':
+        case "plan":
           pending.resolve({ approved: false });
           break;
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = normalizeErrorMessage(err);
       this.log(`Failed to resolve cancelled interaction #${id}: ${message}`);
     }
 
-    this.log(`Resolved pending interaction #${id} (${pending.kind}) as cancelled: ${reason}`);
+    this.log(
+      `Resolved pending interaction #${id} (${pending.kind}) as cancelled: ${reason}`,
+    );
   }
 
-  private pickPermissionOptionId(options: PermissionOption[], preferredKinds: string[]): string | null {
+  private pickPermissionOptionId(
+    options: PermissionOption[],
+    preferredKinds: string[],
+  ): string | null {
     for (const kind of preferredKinds) {
-      const match = options.find((opt) => opt.kind === kind && typeof opt.optionId === 'string');
+      const match = options.find(
+        (opt) => opt.kind === kind && typeof opt.optionId === "string",
+      );
       if (match) {
         return match.optionId;
       }

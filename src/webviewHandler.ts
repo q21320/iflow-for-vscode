@@ -1,29 +1,41 @@
-import * as vscode from 'vscode';
-import * as path from 'path';
-import { ConversationStore } from './store';
-import { AcpClient } from './acpClient';
-import { WebviewMessage, ExtensionMessage, AttachedFile, IDEContext } from './protocol';
-import { CliStatusService } from './webview/cliStatusService';
-import { PlanModeOrchestrator } from './webview/planModeOrchestrator';
-import { PlanApprovalCoordinator } from './webview/planApprovalCoordinator';
-import { SendMessagePipeline } from './webview/sendMessagePipeline';
-import { buildWebviewHtml } from './webview/htmlTemplate';
-import { routeWebviewMessage } from './webview/messageRouter';
-import { WorkspaceFileService } from './webview/workspaceFileService';
-import { IDEContextSyncService } from './webview/ideContextSyncService';
-import { FileChangeReviewService } from './webview/fileChangeReviewService';
-import { toAppError } from './errorUtils';
+import * as vscode from "vscode";
+import * as path from "path";
+import { ConversationStore } from "./store";
+import { AcpClient } from "./acpClient";
+import {
+  WebviewMessage,
+  ExtensionMessage,
+  AttachedFile,
+  IDEContext,
+} from "./protocol";
+import { CliStatusService } from "./webview/cliStatusService";
+import { PlanModeOrchestrator } from "./webview/planModeOrchestrator";
+import { PlanApprovalCoordinator } from "./webview/planApprovalCoordinator";
+import { SendMessagePipeline } from "./webview/sendMessagePipeline";
+import { buildWebviewHtml } from "./webview/htmlTemplate";
+import { routeWebviewMessage } from "./webview/messageRouter";
+import { WorkspaceFileService } from "./webview/workspaceFileService";
+import { IDEContextSyncService } from "./webview/ideContextSyncService";
+import { FileChangeReviewService } from "./webview/fileChangeReviewService";
+import { toAppError } from "./errorUtils";
 import {
   DEFAULT_STREAM_RENDER_INTERVAL_MS,
   DEFAULT_WORKSPACE_FILES_LIMIT,
-} from './constants/runtime';
-import { IDE_CONTEXT_MAX_SELECTION_CHARS, IDE_CONTEXT_SELECTION_DEBOUNCE_MS } from './constants/ui';
+} from "./constants/runtime";
+import {
+  IDE_CONTEXT_MAX_SELECTION_CHARS,
+  IDE_CONTEXT_SELECTION_DEBOUNCE_MS,
+} from "./constants/ui";
 
 export interface WebviewHandlerDeps {
   getConfig<T>(key: string, defaultValue: T): T;
   getWorkspaceFolders(): readonly vscode.WorkspaceFolder[] | undefined;
-  onDidChangeConfiguration(listener: (e: vscode.ConfigurationChangeEvent) => void): vscode.Disposable;
-  onDidChangeWorkspaceFolders(listener: (e: vscode.WorkspaceFoldersChangeEvent) => void): vscode.Disposable;
+  onDidChangeConfiguration(
+    listener: (e: vscode.ConfigurationChangeEvent) => void,
+  ): vscode.Disposable;
+  onDidChangeWorkspaceFolders(
+    listener: (e: vscode.WorkspaceFoldersChangeEvent) => void,
+  ): vscode.Disposable;
   findFiles(
     include: string | vscode.GlobPattern,
     exclude?: string | vscode.GlobPattern | null,
@@ -32,13 +44,22 @@ export interface WebviewHandlerDeps {
   ): Thenable<vscode.Uri[]>;
   getWorkspaceFolder(uri: vscode.Uri): vscode.WorkspaceFolder | undefined;
   getActiveTextEditor(): vscode.TextEditor | undefined;
-  onDidChangeActiveTextEditor(listener: (e: vscode.TextEditor | undefined) => void): vscode.Disposable;
-  onDidChangeTextEditorSelection(listener: (e: vscode.TextEditorSelectionChangeEvent) => void): vscode.Disposable;
-  showOpenDialog(options?: vscode.OpenDialogOptions): Thenable<vscode.Uri[] | undefined>;
+  onDidChangeActiveTextEditor(
+    listener: (e: vscode.TextEditor | undefined) => void,
+  ): vscode.Disposable;
+  onDidChangeTextEditorSelection(
+    listener: (e: vscode.TextEditorSelectionChangeEvent) => void,
+  ): vscode.Disposable;
+  showOpenDialog(
+    options?: vscode.OpenDialogOptions,
+  ): Thenable<vscode.Uri[] | undefined>;
   showInformationMessage(message: string): Thenable<string | undefined>;
   showErrorMessage(message: string): Thenable<string | undefined>;
   createOutputChannel(name: string): vscode.OutputChannel;
-  executeCommand<T>(command: string, ...rest: unknown[]): Thenable<T | undefined>;
+  executeCommand<T>(
+    command: string,
+    ...rest: unknown[]
+  ): Thenable<T | undefined>;
   registerTextDocumentContentProvider(
     scheme: string,
     provider: vscode.TextDocumentContentProvider,
@@ -48,21 +69,27 @@ export interface WebviewHandlerDeps {
 function createDefaultDeps(): WebviewHandlerDeps {
   return {
     getConfig: <T>(key: string, defaultValue: T): T =>
-      vscode.workspace.getConfiguration('iflow').get<T>(key, defaultValue),
+      vscode.workspace.getConfiguration("iflow").get<T>(key, defaultValue),
     getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
-    onDidChangeConfiguration: (listener) => vscode.workspace.onDidChangeConfiguration(listener),
-    onDidChangeWorkspaceFolders: (listener) => vscode.workspace.onDidChangeWorkspaceFolders(listener),
+    onDidChangeConfiguration: (listener) =>
+      vscode.workspace.onDidChangeConfiguration(listener),
+    onDidChangeWorkspaceFolders: (listener) =>
+      vscode.workspace.onDidChangeWorkspaceFolders(listener),
     findFiles: (include, exclude, maxResults, token) =>
       vscode.workspace.findFiles(include, exclude, maxResults, token),
     getWorkspaceFolder: (uri) => vscode.workspace.getWorkspaceFolder(uri),
     getActiveTextEditor: () => vscode.window.activeTextEditor,
-    onDidChangeActiveTextEditor: (listener) => vscode.window.onDidChangeActiveTextEditor(listener),
-    onDidChangeTextEditorSelection: (listener) => vscode.window.onDidChangeTextEditorSelection(listener),
+    onDidChangeActiveTextEditor: (listener) =>
+      vscode.window.onDidChangeActiveTextEditor(listener),
+    onDidChangeTextEditorSelection: (listener) =>
+      vscode.window.onDidChangeTextEditorSelection(listener),
     showOpenDialog: (options) => vscode.window.showOpenDialog(options),
-    showInformationMessage: (message) => vscode.window.showInformationMessage(message),
+    showInformationMessage: (message) =>
+      vscode.window.showInformationMessage(message),
     showErrorMessage: (message) => vscode.window.showErrorMessage(message),
     createOutputChannel: (name) => vscode.window.createOutputChannel(name),
-    executeCommand: (command, ...rest) => vscode.commands.executeCommand(command, ...rest),
+    executeCommand: (command, ...rest) =>
+      vscode.commands.executeCommand(command, ...rest),
     registerTextDocumentContentProvider: (scheme, provider) =>
       vscode.workspace.registerTextDocumentContentProvider(scheme, provider),
   };
@@ -91,14 +118,13 @@ export class WebviewHandler {
   constructor(
     extensionUri: vscode.Uri,
     globalState: vscode.Memento,
-    _secrets: vscode.SecretStorage,
     deps: Partial<WebviewHandlerDeps> = {},
   ) {
     this.extensionUri = extensionUri;
     this.deps = { ...createDefaultDeps(), ...deps };
     this.client = new AcpClient();
     this.store = new ConversationStore(globalState, (state) => {
-      this.postMessage({ type: 'stateUpdated', state });
+      this.postMessage({ type: "stateUpdated", state });
     });
     this.workspaceFileService = new WorkspaceFileService({
       getConfig: (key, defaultValue) => this.deps.getConfig(key, defaultValue),
@@ -106,15 +132,18 @@ export class WebviewHandler {
       getWorkspaceFolder: (uri) => this.deps.getWorkspaceFolder(uri),
       findFiles: (include, exclude, maxResults, token) =>
         this.deps.findFiles(include, exclude, maxResults, token),
-      executeCommand: (command, ...rest) => this.deps.executeCommand(command, ...rest),
+      executeCommand: (command, ...rest) =>
+        this.deps.executeCommand(command, ...rest),
       debug: (message) => this.debug(message),
     });
     this.ideContextSyncService = new IDEContextSyncService({
-      postContextMessage: (context) => this.postMessage({ type: 'ideContextChanged', context }),
+      postContextMessage: (context) =>
+        this.postMessage({ type: "ideContextChanged", context }),
       debug: (message) => this.debug(message),
     });
     this.fileChangeReviewService = new FileChangeReviewService({
-      executeCommand: (command, ...rest) => this.deps.executeCommand(command, ...rest),
+      executeCommand: (command, ...rest) =>
+        this.deps.executeCommand(command, ...rest),
       registerTextDocumentContentProvider: (scheme, provider) =>
         this.deps.registerTextDocumentContentProvider(scheme, provider),
       log: (message) => this.debug(message),
@@ -122,10 +151,17 @@ export class WebviewHandler {
 
     this.cliStatusService = new CliStatusService(
       this.client,
-      (result) => this.store.setCliStatus(result.version !== null, result.version, result.diagnostics),
+      (result) =>
+        this.store.setCliStatus(
+          result.version !== null,
+          result.version,
+          result.diagnostics,
+        ),
       (message) => this.debug(message),
     );
-    this.planApprovalCoordinator = new PlanApprovalCoordinator(new PlanModeOrchestrator());
+    this.planApprovalCoordinator = new PlanApprovalCoordinator(
+      new PlanModeOrchestrator(),
+    );
 
     this.sendMessagePipeline = new SendMessagePipeline({
       store: this.store,
@@ -134,12 +170,26 @@ export class WebviewHandler {
       markCliUnavailable: (diagnostics) => this.markCliUnavailable(diagnostics),
       clearSessionId: () => this.store.clearSessionId(),
       resolveWorkspaceFolder: (conversation) =>
-        this.workspaceFileService.resolveWorkspaceFolder(conversation, this.deps.getActiveTextEditor()),
-      getAllWorkspaceFolderPaths: () => this.workspaceFileService.getAllWorkspaceFolderPaths(),
-      getWorkspaceFileList: async (cwd, limit) => this.workspaceFileService.getWorkspaceFileList(cwd, limit),
-      shouldIncludeWorkspaceFiles: () => this.deps.getConfig<boolean>('autoIncludeWorkspaceFiles', false),
-      getWorkspaceFilesLimit: () => this.deps.getConfig<number>('workspaceFilesLimit', DEFAULT_WORKSPACE_FILES_LIMIT),
-      getStreamRenderIntervalMs: () => this.deps.getConfig<number>('streamRenderIntervalMs', DEFAULT_STREAM_RENDER_INTERVAL_MS),
+        this.workspaceFileService.resolveWorkspaceFolder(
+          conversation,
+          this.deps.getActiveTextEditor(),
+        ),
+      getAllWorkspaceFolderPaths: () =>
+        this.workspaceFileService.getAllWorkspaceFolderPaths(),
+      getWorkspaceFileList: async (cwd, limit) =>
+        this.workspaceFileService.getWorkspaceFileList(cwd, limit),
+      shouldIncludeWorkspaceFiles: () =>
+        this.deps.getConfig<boolean>("autoIncludeWorkspaceFiles", false),
+      getWorkspaceFilesLimit: () =>
+        this.deps.getConfig<number>(
+          "workspaceFilesLimit",
+          DEFAULT_WORKSPACE_FILES_LIMIT,
+        ),
+      getStreamRenderIntervalMs: () =>
+        this.deps.getConfig<number>(
+          "streamRenderIntervalMs",
+          DEFAULT_STREAM_RENDER_INTERVAL_MS,
+        ),
       planApprovalCoordinator: this.planApprovalCoordinator,
       debug: (message) => this.debug(message),
       setSessionId: (sessionId) => this.store.setSessionId(sessionId),
@@ -151,7 +201,7 @@ export class WebviewHandler {
       },
       onRunFinalize: (context) => {
         const summary = this.fileChangeReviewService.finalizeRun(context);
-        this.postMessage({ type: 'roundFileChanges', summary });
+        this.postMessage({ type: "roundFileChanges", summary });
       },
     });
   }
@@ -167,25 +217,25 @@ export class WebviewHandler {
 
     // Listen for messages from the webview
     const messageDisposable = webview.onDidReceiveMessage(
-      (message: WebviewMessage) => this.handleMessage(message)
+      (message: WebviewMessage) => this.handleMessage(message),
     );
     this.disposables.push(messageDisposable);
 
     // Re-check CLI availability when relevant settings change
-    const configDisposable = this.deps.onDidChangeConfiguration(
-      async (e) => {
-        if (e.affectsConfiguration('iflow.nodePath') ||
-            e.affectsConfiguration('iflow.baseUrl') ||
-            e.affectsConfiguration('iflow.port') ||
-            e.affectsConfiguration('iflow.timeout') ||
-            e.affectsConfiguration('iflow.enableCliStream')) {
-          await this.client.resetConnection();
-          this.client.clearAutoDetectCache();
-          CliStatusService.invalidateSharedCliCheck();
-          await this.checkCliAvailability(true);
-        }
+    const configDisposable = this.deps.onDidChangeConfiguration(async (e) => {
+      if (
+        e.affectsConfiguration("iflow.nodePath") ||
+        e.affectsConfiguration("iflow.baseUrl") ||
+        e.affectsConfiguration("iflow.port") ||
+        e.affectsConfiguration("iflow.timeout") ||
+        e.affectsConfiguration("iflow.enableCliStream")
+      ) {
+        await this.client.resetConnection();
+        this.client.clearAutoDetectCache();
+        this.cliStatusService.invalidateCache();
+        await this.checkCliAvailability(true);
       }
-    );
+    });
     this.disposables.push(configDisposable);
 
     // Track active editor changes for IDE context
@@ -208,9 +258,11 @@ export class WebviewHandler {
 
     // Initialize workspace folders and track changes
     this.syncWorkspaceFolders();
-    const workspaceFolderDisposable = this.deps.onDidChangeWorkspaceFolders(() => {
-      this.syncWorkspaceFolders();
-    });
+    const workspaceFolderDisposable = this.deps.onDidChangeWorkspaceFolders(
+      () => {
+        this.syncWorkspaceFolders();
+      },
+    );
     this.disposables.push(workspaceFolderDisposable);
   }
 
@@ -221,101 +273,139 @@ export class WebviewHandler {
   async handleMessage(message: WebviewMessage): Promise<void> {
     this.debug(`Received webview message: ${message.type}`);
     try {
-      await routeWebviewMessage(message, {
-        ready: async () => {
-          this.syncWorkspaceFolders();
-          this.postMessage({ type: 'stateUpdated', state: this.store.getState() });
-          this.ideContextSyncService.push(IDE_CONTEXT_MAX_SELECTION_CHARS);
-        },
-        recheckCli: async () => {
-          await this.client.resetConnection();
-          this.client.clearAutoDetectCache();
-          CliStatusService.invalidateSharedCliCheck();
-          await this.checkCliAvailability(true);
-        },
-        pickFiles: async () => this.handlePickFiles(),
-        listWorkspaceFiles: async (msg) => {
-          const files = await this.workspaceFileService.listWorkspaceFiles(msg.query);
-          this.postMessage({ type: 'workspaceFiles', files });
-        },
-        readFiles: async (msg) => {
-          const files = await this.workspaceFileService.readFiles(msg.paths);
-          this.postMessage({ type: 'fileContents', files });
-        },
-        openFile: async (msg) => {
-          try {
-            await this.workspaceFileService.openFile(msg.path);
-          } catch (error) {
-            const messageText = toAppError(error).message;
-            this.debug(`Failed to open file ${msg.path}: ${messageText}`);
-          }
-        },
-        newConversation: async () => {
-          const activeUri = this.deps.getActiveTextEditor()?.document.uri;
-          const folder = activeUri?.scheme === 'file'
-            ? this.deps.getWorkspaceFolder(activeUri)
-            : undefined;
-          this.store.newConversation(folder?.uri.fsPath);
-        },
-        switchConversation: async (msg) => this.store.switchConversation(msg.conversationId),
-        deleteConversation: async (msg) => this.store.deleteConversation(msg.conversationId),
-        clearConversation: async () => this.store.clearCurrentConversation(),
-        setMode: async (msg) => this.store.setMode(msg.mode),
-        setThink: async (msg) => this.store.setThink(msg.enabled),
-        setModel: async (msg) => this.store.setModel(msg.model),
-        setWorkspaceFolder: async (msg) => this.store.setConversationWorkspaceFolder(msg.uri),
-        sendMessage: async (msg) => this.handleSendMessage(msg.content, msg.attachedFiles, false, msg.ideContext),
-        toolApproval: async (msg) => {
-          if (msg.outcome === 'reject') {
-            await this.client.rejectToolCall(msg.requestId);
-            await this.client.cancel();
-            this.store.batchUpdate(() => {
-              this.store.endAssistantMessage();
-              this.store.setStreaming(false);
+      await routeWebviewMessage(
+        message,
+        {
+          ready: async () => {
+            this.syncWorkspaceFolders();
+            this.postMessage({
+              type: "stateUpdated",
+              state: this.store.getState(),
             });
-            return;
-          }
-          await this.client.approveToolCall(msg.requestId, msg.outcome);
-        },
-        questionAnswer: async (msg) => this.client.answerQuestions(msg.requestId, msg.answers),
-        fileChangeAction: async (msg) => {
-          try {
-            const summary = await this.fileChangeReviewService.handleAction(msg);
-            this.postMessage({ type: 'roundFileChanges', summary });
-          } catch (error) {
-            const messageText = toAppError(error, 'Failed to handle file change action').message;
-            this.debug(`fileChangeAction failed (${msg.action}): ${messageText}`);
-            await this.deps.showErrorMessage(messageText);
-          }
-        },
-        planApproval: async (msg) => {
-          if (msg.requestId === -1) {
-            this.planApprovalCoordinator.registerSyntheticApproval(msg.option, msg.feedback);
-            if (msg.option === 'smart' || msg.option === 'default') {
-              this.store.setMode(msg.option);
+            this.ideContextSyncService.push(IDE_CONTEXT_MAX_SELECTION_CHARS);
+          },
+          recheckCli: async () => {
+            await this.client.resetConnection();
+            this.client.clearAutoDetectCache();
+            this.cliStatusService.invalidateCache();
+            await this.checkCliAvailability(true);
+          },
+          pickFiles: async () => this.handlePickFiles(),
+          listWorkspaceFiles: async (msg) => {
+            const files = await this.workspaceFileService.listWorkspaceFiles(
+              msg.query,
+            );
+            this.postMessage({ type: "workspaceFiles", files });
+          },
+          readFiles: async (msg) => {
+            const files = await this.workspaceFileService.readFiles(msg.paths);
+            this.postMessage({ type: "fileContents", files });
+          },
+          openFile: async (msg) => {
+            try {
+              await this.workspaceFileService.openFile(msg.path);
+            } catch (error) {
+              const messageText = toAppError(error).message;
+              this.debug(`Failed to open file ${msg.path}: ${messageText}`);
             }
-            return;
-          }
+          },
+          newConversation: async () => {
+            const activeUri = this.deps.getActiveTextEditor()?.document.uri;
+            const folder =
+              activeUri?.scheme === "file"
+                ? this.deps.getWorkspaceFolder(activeUri)
+                : undefined;
+            this.store.newConversation(folder?.uri.fsPath);
+          },
+          switchConversation: async (msg) =>
+            this.store.switchConversation(msg.conversationId),
+          deleteConversation: async (msg) =>
+            this.store.deleteConversation(msg.conversationId),
+          clearConversation: async () => this.store.clearCurrentConversation(),
+          setMode: async (msg) => this.store.setMode(msg.mode),
+          setThink: async (msg) => this.store.setThink(msg.enabled),
+          setModel: async (msg) => this.store.setModel(msg.model),
+          setWorkspaceFolder: async (msg) =>
+            this.store.setConversationWorkspaceFolder(msg.uri),
+          sendMessage: async (msg) =>
+            this.handleSendMessage(
+              msg.content,
+              msg.attachedFiles,
+              false,
+              msg.ideContext,
+            ),
+          toolApproval: async (msg) => {
+            if (msg.outcome === "reject") {
+              await this.client.rejectToolCall(msg.requestId);
+              await this.client.cancel();
+              this.store.batchUpdate(() => {
+                this.store.endAssistantMessage();
+                this.store.setStreaming(false);
+              });
+              return;
+            }
+            await this.client.approveToolCall(msg.requestId, msg.outcome);
+          },
+          questionAnswer: async (msg) =>
+            this.client.answerQuestions(msg.requestId, msg.answers),
+          fileChangeAction: async (msg) => {
+            try {
+              const summary =
+                await this.fileChangeReviewService.handleAction(msg);
+              this.postMessage({ type: "roundFileChanges", summary });
+            } catch (error) {
+              const messageText = toAppError(
+                error,
+                "Failed to handle file change action",
+              ).message;
+              this.debug(
+                `fileChangeAction failed (${msg.action}): ${messageText}`,
+              );
+              await this.deps.showErrorMessage(messageText);
+            }
+          },
+          planApproval: async (msg) => {
+            if (msg.requestId === -1) {
+              this.planApprovalCoordinator.registerSyntheticApproval(
+                msg.option,
+                msg.feedback,
+              );
+              if (msg.option === "smart" || msg.option === "default") {
+                this.store.setMode(msg.option);
+              }
+              return;
+            }
 
-          if (msg.requestId < 0) {
-            this.debug(`Ignoring planApproval with invalid requestId=${msg.requestId}`);
-            return;
-          }
+            if (msg.requestId < 0) {
+              this.debug(
+                `Ignoring planApproval with invalid requestId=${msg.requestId}`,
+              );
+              return;
+            }
 
-          const approved = this.planApprovalCoordinator.registerServerApproval(msg.option, msg.feedback);
-          await this.client.approvePlan(msg.requestId, approved);
+            const approved =
+              this.planApprovalCoordinator.registerServerApproval(
+                msg.option,
+                msg.feedback,
+              );
+            await this.client.approvePlan(msg.requestId, approved);
+          },
+          cancelCurrent: async () => {
+            await this.client.cancel();
+            this.store.setStreaming(false);
+            this.store.endAssistantMessage();
+            this.planApprovalCoordinator.cancelWait();
+          },
         },
-        cancelCurrent: async () => {
-          await this.client.cancel();
-          this.store.setStreaming(false);
-          this.store.endAssistantMessage();
-          this.planApprovalCoordinator.cancelWait();
+        (unknownType) => {
+          this.debug(`Unhandled webview message type: ${unknownType}`);
         },
-      }, (unknownType) => {
-        this.debug(`Unhandled webview message type: ${unknownType}`);
-      });
+      );
     } catch (error) {
-      const messageText = toAppError(error, 'Unhandled webview message error').message;
+      const messageText = toAppError(
+        error,
+        "Unhandled webview message error",
+      ).message;
       this.debug(`Message handler failed (${message.type}): ${messageText}`);
       if (this.store.getState().isStreaming) {
         this.store.batchUpdate(() => {
@@ -323,7 +413,7 @@ export class WebviewHandler {
           this.store.setStreaming(false);
         });
       }
-      this.postMessage({ type: 'streamError', error: messageText });
+      this.postMessage({ type: "streamError", error: messageText });
     }
   }
 
@@ -334,22 +424,27 @@ export class WebviewHandler {
   private async handlePickFiles(): Promise<void> {
     const files = await this.deps.showOpenDialog({
       canSelectMany: true,
-      openLabel: 'Attach Files'
+      openLabel: "Attach Files",
     });
 
     if (files) {
       this.debug(`Picked files count: ${files.length}`);
       this.postMessage({
-        type: 'pickedFiles',
-        files: files.map(f => ({
+        type: "pickedFiles",
+        files: files.map((f) => ({
           path: f.fsPath,
-          name: path.basename(f.fsPath)
-        }))
+          name: path.basename(f.fsPath),
+        })),
       });
     }
   }
 
-  private async handleSendMessage(content: string, attachedFiles: AttachedFile[], silent = false, ideContext?: IDEContext): Promise<void> {
+  private async handleSendMessage(
+    content: string,
+    attachedFiles: AttachedFile[],
+    silent = false,
+    ideContext?: IDEContext,
+  ): Promise<void> {
     await this.sendMessagePipeline.execute({
       content,
       attachedFiles,
@@ -359,11 +454,12 @@ export class WebviewHandler {
   }
 
   private markCliUnavailable(diagnostics: string): void {
-    CliStatusService.cacheCliCheckResult({ version: null, diagnostics });
+    this.cliStatusService.cacheResult({ version: null, diagnostics });
     this.store.setCliStatus(false, null, diagnostics);
   }
 
   private syncWorkspaceFolders(): void {
+    this.workspaceFileService.invalidateCanonicalRootsCache();
     const folders = this.workspaceFileService.syncWorkspaceFolders();
     this.store.setWorkspaceFolders(folders);
     this.debug(`Synced workspace folders: count=${folders.length}`);
@@ -392,19 +488,19 @@ export class WebviewHandler {
     this.disposeListeners();
     await this.client.dispose();
     this.fileChangeReviewService.dispose();
-    this.debug('WebviewHandler disposed');
+    this.debug("WebviewHandler disposed");
     this.outputChannel?.dispose();
     this.outputChannel = null;
     this.webview = null;
   }
 
   private debug(message: string): void {
-    if (!this.deps.getConfig<boolean>('debugLogging', false)) {
+    if (!this.deps.getConfig<boolean>("debugLogging", false)) {
       return;
     }
 
     if (!this.outputChannel) {
-      this.outputChannel = this.deps.createOutputChannel('IFlow Debug');
+      this.outputChannel = this.deps.createOutputChannel("IFlow Debug");
     }
 
     this.outputChannel.appendLine(`[WebviewHandler] ${message}`);

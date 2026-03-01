@@ -1,33 +1,33 @@
 // Webview entry point for IFlow panel.
-// Orchestrates state, message routing, and delegates rendering/events.
 
 import type {
-  Conversation,
   WebviewMessage,
   ExtensionMessage,
   IDEContext,
-} from '../src/protocol';
-import { formatStreamStatusText } from '../src/streamStatusUtils';
-import { formatSubagentProgressText, SubagentProgressTracker } from '../src/shared/subagentProgressTracker';
-import { escapeHtml } from './markdownRenderer';
-import { SlashMenuController } from './slashMenuController';
-import { InputController } from './inputController';
-import { AppMessageRouter } from './appMessageRouter';
+} from "../src/protocol";
+import { formatStreamStatusText } from "../src/streamStatusUtils";
+import {
+  formatSubagentProgressText,
+  SubagentProgressTracker,
+} from "../src/shared/subagentProgressTracker";
+import { escapeHtml } from "./markdownRenderer";
+import { SlashMenuController } from "./slashMenuController";
+import { InputController } from "./inputController";
+import { AppMessageRouter } from "./appMessageRouter";
 import {
   TEXTAREA_MIN_HEIGHT,
   TEXTAREA_MAX_HEIGHT,
   COMPOSER_MIN_INSET,
   COMPOSER_INSET_PADDING,
-} from './webviewUtils';
+} from "./webviewUtils";
+import { renderTopBar } from "./renderers/topBarRenderer";
+import { renderConversationPanel } from "./renderers/conversationPanelRenderer";
+import { renderMessages } from "./renderers/messageRenderer";
 import {
-  renderTopBar,
-  renderConversationPanel,
-  renderMessages,
   renderComposer,
   renderIDEContextChips,
   renderRoundFileChanges,
-} from './appRenderer';
-import type { PendingConfirmation, PendingQuestion, PendingPlanApproval } from './panels/panelTypes';
+} from "./renderers/composerRenderer";
 import {
   attachTopBarListeners,
   attachModeListeners,
@@ -37,23 +37,24 @@ import {
   attachFileOpenListeners,
   attachIDEContextListeners,
   closePanelsOnOutsideClick,
-} from './eventBinder';
-import type { AppHost } from './eventBinder';
-import { createStringTemplateRenderDriver, type WebviewRenderDriver } from './renderDriver';
+} from "./eventBinder";
+import type { AppHost } from "./eventBinder";
+import {
+  createStringTemplateRenderDriver,
+  type WebviewRenderDriver,
+} from "./renderDriver";
 import {
   updateComposerStatusBarView,
   updateIDEContextChipsView,
   updatePendingIndicatorView,
   updateStreamingContentView,
-} from './streamingViewUpdater';
-import { VisualUpdateScheduler } from '../src/shared/visualUpdateScheduler';
-import { AppState } from './appState';
-import { AppLifecycle } from './appLifecycle';
+} from "./streamingViewUpdater";
+import { VisualUpdateScheduler } from "../src/shared/visualUpdateScheduler";
+import { AppState } from "./appState";
+import { AppLifecycle } from "./appLifecycle";
 
 interface VsCodeApi {
   postMessage(message: WebviewMessage): void;
-  getState(): unknown;
-  setState(state: unknown): void;
 }
 
 declare function acquireVsCodeApi(): VsCodeApi;
@@ -63,7 +64,7 @@ const SUBAGENT_PENDING_TICK_MS = 1000;
 
 class IFlowApp implements AppHost {
   private readonly vscode: VsCodeApi;
-  private readonly appState = new AppState();
+  readonly appState = new AppState();
   private slashMenu!: SlashMenuController;
   private inputCtrl!: InputController;
   private readonly faviconUri: string;
@@ -73,10 +74,12 @@ class IFlowApp implements AppHost {
   private readonly lifecycle = new AppLifecycle();
   private readonly subagentProgressTracker = new SubagentProgressTracker();
   private subagentPendingTicker: ReturnType<typeof setInterval> | null = null;
+  private measureCtx: CanvasRenderingContext2D | null = null;
 
   constructor() {
     this.vscode = acquireVsCodeApi();
-    this.faviconUri = document.getElementById('app')?.getAttribute('data-favicon-uri') || '';
+    this.faviconUri =
+      document.getElementById("app")?.getAttribute("data-favicon-uri") || "";
     this.renderDriver = createStringTemplateRenderDriver();
     this.visualUpdateScheduler = new VisualUpdateScheduler(
       (run) => window.requestAnimationFrame(() => run()),
@@ -89,7 +92,8 @@ class IFlowApp implements AppHost {
 
     this.inputCtrl = new InputController({
       postMessage: (msg) => this.vscode.postMessage(msg),
-      getInputElement: () => document.getElementById('message-input') as HTMLTextAreaElement | null,
+      getInputElement: () =>
+        document.getElementById("message-input") as HTMLTextAreaElement | null,
       onAttachedFilesChanged: () => {
         attachFileOpenListeners((msg) => this.vscode.postMessage(msg));
         this.syncMessagesBottomInset();
@@ -98,8 +102,9 @@ class IFlowApp implements AppHost {
 
     this.slashMenu = new SlashMenuController({
       postMessage: (msg) => this.vscode.postMessage(msg),
-      getCurrentConversation: () => this.getCurrentConversation(),
-      getInputElement: () => document.getElementById('message-input') as HTMLTextAreaElement | null,
+      getCurrentConversation: () => this.appState.getCurrentConversation(),
+      getInputElement: () =>
+        document.getElementById("message-input") as HTMLTextAreaElement | null,
       onSlashMenuClosed: () => {
         this.appState.clearInputOnNextRender = true;
         this.render();
@@ -109,35 +114,7 @@ class IFlowApp implements AppHost {
     });
 
     this.messageRouter = new AppMessageRouter({
-      getState: () => this.appState.state,
-      setState: (state) => {
-        this.appState.state = state;
-      },
-      getStreamStatus: () => this.appState.streamStatus,
-      setStreamStatus: (status) => {
-        this.appState.streamStatus = status;
-      },
-      getIDEContext: () => this.appState.ideContext,
-      setIDEContext: (context) => {
-        this.appState.ideContext = context;
-      },
-      getIDEContextDismissed: () => ({ ...this.appState.ideContextDismissed }),
-      setIDEContextDismissed: (dismissed) => {
-        this.appState.ideContextDismissed = dismissed;
-      },
-      getLatestRoundChangesByConversationId: () => this.appState.latestRoundChangesByConversationId,
-      setLatestRoundChangesByConversationId: (value) => {
-        this.appState.latestRoundChangesByConversationId = value;
-      },
-      setPendingConfirmation: (value) => {
-        this.appState.pendingConfirmation = value;
-      },
-      setPendingQuestion: (value) => {
-        this.appState.pendingQuestion = value;
-      },
-      setPendingPlanApproval: (value) => {
-        this.appState.pendingPlanApproval = value;
-      },
+      appState: this.appState,
       inputCtrl: this.inputCtrl,
       render: (conversationChanged = false) => {
         if (conversationChanged) {
@@ -146,101 +123,51 @@ class IFlowApp implements AppHost {
         this.render(conversationChanged);
       },
       updateRoundFileChanges: () => this.updateRoundFileChangesCard(),
-      updateStreamingContent: () => this.scheduleStreamingContentUpdate(),
-      updatePendingIndicator: () => this.schedulePendingIndicatorUpdate(),
-      updateIDEContextChips: () => this.updateIDEContextChips(),
+      updateStreamingContent: () =>
+        this.visualUpdateScheduler.scheduleStreamingUpdate(),
+      updatePendingIndicator: () =>
+        this.visualUpdateScheduler.schedulePendingIndicatorUpdate(),
+      updateIDEContextChips: () => this.patchIDEContextChips(),
     });
 
-    this.lifecycle.setupMessageHandler((message) => this.handleMessage(message));
+    this.lifecycle.setupMessageHandler((message) =>
+      this.handleMessage(message),
+    );
     this.lifecycle.setupDocumentClickHandler((target) => {
       closePanelsOnOutsideClick(this, target);
     });
 
     this.render();
-    this.vscode.postMessage({ type: 'ready' });
-  }
-
-  get showConversationPanel(): boolean {
-    return this.appState.showConversationPanel;
-  }
-
-  set showConversationPanel(value: boolean) {
-    this.appState.showConversationPanel = value;
-  }
-
-  get conversationSearch(): string {
-    return this.appState.conversationSearch;
-  }
-
-  set conversationSearch(value: string) {
-    this.appState.conversationSearch = value;
-  }
-
-  get showModeMenu(): boolean {
-    return this.appState.showModeMenu;
-  }
-
-  set showModeMenu(value: boolean) {
-    this.appState.showModeMenu = value;
+    this.vscode.postMessage({ type: "ready" });
   }
 
   postMessage(msg: WebviewMessage): void {
     this.vscode.postMessage(msg);
   }
 
-  getConversations(): Conversation[] {
-    return this.appState.getConversations();
-  }
-
-  getCurrentConversationId(): string | null {
-    return this.appState.getCurrentConversationId();
-  }
-
-  getCurrentConversation(): Conversation | null {
-    return this.appState.getCurrentConversation();
-  }
-
-  getPendingConfirmation(): PendingConfirmation | null {
-    return this.appState.pendingConfirmation;
-  }
-
-  clearPendingConfirmation(): void {
-    this.appState.pendingConfirmation = null;
-  }
-
-  getPendingQuestion(): PendingQuestion | null {
-    return this.appState.pendingQuestion;
-  }
-
-  clearPendingQuestion(): void {
-    this.appState.pendingQuestion = null;
-  }
-
-  getPendingPlanApproval(): PendingPlanApproval | null {
-    return this.appState.pendingPlanApproval;
-  }
-
-  clearPendingPlanApproval(): void {
-    this.appState.pendingPlanApproval = null;
-  }
-
-  dismissIDEContext(type: 'activeFile' | 'selection'): void {
-    this.appState.ideContextDismissed = { ...this.appState.ideContextDismissed, [type]: true };
-  }
-
   patchIDEContextChips(): void {
-    this.updateIDEContextChips();
+    updateIDEContextChipsView({
+      ideContext: this.appState.ideContext,
+      ideContextDismissed: this.appState.ideContextDismissed,
+      onAfterPatch: () => {
+        attachIDEContextListeners(this);
+        this.syncMessagesBottomInset();
+      },
+    });
   }
 
   autoSizeSelect(select: HTMLSelectElement): void {
     const option = select.options[select.selectedIndex];
     if (!option) return;
-    const span = document.createElement('span');
-    span.style.cssText = 'position:absolute;visibility:hidden;font-size:inherit;font-family:inherit;white-space:nowrap;';
-    select.parentElement?.appendChild(span);
-    span.textContent = option.text;
-    select.style.width = `${span.offsetWidth + 24}px`;
-    span.remove();
+    const style = window.getComputedStyle(select);
+    const ctx = (this.measureCtx ??= document
+      .createElement("canvas")
+      .getContext("2d"));
+    if (ctx) {
+      ctx.font = `${style.fontSize} ${style.fontFamily}`;
+      const width = ctx.measureText(option.text).width;
+      select.style.width = `${Math.ceil(width) + 24}px`;
+    }
   }
 
   handleInputChange(input: HTMLTextAreaElement): void {
@@ -273,8 +200,10 @@ class IFlowApp implements AppHost {
   }
 
   sendMessage(): void {
-    const input = document.getElementById('message-input') as HTMLTextAreaElement;
-    const content = input?.value.trim() || '';
+    const input = document.getElementById(
+      "message-input",
+    ) as HTMLTextAreaElement;
+    const content = input?.value.trim() || "";
 
     if (!this.inputCtrl.canSend(content)) {
       return;
@@ -282,26 +211,31 @@ class IFlowApp implements AppHost {
 
     const attachedFiles = this.inputCtrl.consumeAttachedFiles();
     const ideContext: IDEContext = {
-      activeFile: this.appState.ideContextDismissed.activeFile ? null : this.appState.ideContext.activeFile,
-      selection: this.appState.ideContextDismissed.selection ? null : this.appState.ideContext.selection,
+      activeFile: this.appState.ideContextDismissed.activeFile
+        ? null
+        : this.appState.ideContext.activeFile,
+      selection: this.appState.ideContextDismissed.selection
+        ? null
+        : this.appState.ideContext.selection,
     };
-    const hasContext = ideContext.activeFile !== null || ideContext.selection !== null;
+    const hasContext =
+      ideContext.activeFile !== null || ideContext.selection !== null;
     const conversationId = this.appState.state?.currentConversationId;
 
     if (conversationId) {
       this.appState.clearRoundChangesForConversation(conversationId);
-      document.querySelector('.round-file-changes-card')?.remove();
+      document.querySelector(".round-file-changes-card")?.remove();
     }
 
     this.vscode.postMessage({
-      type: 'sendMessage',
+      type: "sendMessage",
       content,
       attachedFiles,
       ...(hasContext ? { ideContext } : {}),
     });
 
     if (input) {
-      input.value = '';
+      input.value = "";
       this.autoResizeTextarea(input);
     }
   }
@@ -313,7 +247,7 @@ class IFlowApp implements AppHost {
   }
 
   render(smoothScrollToBottom = false): void {
-    const app = document.getElementById('app');
+    const app = document.getElementById("app");
     if (!app) {
       return;
     }
@@ -321,11 +255,13 @@ class IFlowApp implements AppHost {
     this.visualUpdateScheduler.cancelAll();
 
     const clearInput = this.appState.consumeClearInputOnNextRender();
-    const conversation = this.getCurrentConversation();
+    const conversation = this.appState.getCurrentConversation();
     const roundFileChanges = conversation
       ? this.appState.latestRoundChangesByConversationId.get(conversation.id)
       : undefined;
-    const title = conversation ? escapeHtml(conversation.title) : 'No conversations';
+    const title = conversation
+      ? escapeHtml(conversation.title)
+      : "No conversations";
     const conversationPanelHtml = renderConversationPanel({
       conversations: this.appState.state?.conversations || [],
       search: this.appState.conversationSearch,
@@ -348,13 +284,22 @@ class IFlowApp implements AppHost {
           pendingConfirmation: this.appState.pendingConfirmation,
           pendingQuestion: this.appState.pendingQuestion,
           pendingPlanApproval: this.appState.pendingPlanApproval,
-          ideContextChipsHtml: renderIDEContextChips(this.appState.ideContext, this.appState.ideContextDismissed),
+          ideContextChipsHtml: renderIDEContextChips(
+            this.appState.ideContext,
+            this.appState.ideContextDismissed,
+          ),
           attachedFilesHtml: this.inputCtrl.renderAttachedFilesHtml(),
-          slashMenuHtml: this.slashMenu.isVisible ? this.slashMenu.renderHtml() : '',
-          mentionMenuHtml: this.inputCtrl.isMentionVisible ? this.inputCtrl.renderMentionMenuHtml() : '',
+          slashMenuHtml: this.slashMenu.isVisible
+            ? this.slashMenu.renderHtml()
+            : "",
+          mentionMenuHtml: this.inputCtrl.isMentionVisible
+            ? this.inputCtrl.renderMentionMenuHtml()
+            : "",
           contextUsage: this.appState.state?.contextUsage,
           showModeMenu: this.appState.showModeMenu,
-          workspaceFolderName: this.appState.getWorkspaceFolderName(conversation),
+          cwd: this.appState.getCwd(conversation),
+          workspaceFolderName:
+            this.appState.getWorkspaceFolderName(conversation),
           isMultiRoot: this.appState.state?.isMultiRoot ?? false,
           roundFileChanges,
         })}
@@ -375,7 +320,9 @@ class IFlowApp implements AppHost {
         this.inputCtrl.attachFileRemoveListeners();
         attachFileOpenListeners((msg) => this.vscode.postMessage(msg));
         attachIDEContextListeners(this);
-        this.setupComposerLayoutObserver();
+        this.lifecycle.setupComposerLayoutObserver(() =>
+          this.syncMessagesBottomInset(),
+        );
       },
       onRestoreInput: (input) => {
         this.autoResizeTextarea(input);
@@ -387,17 +334,19 @@ class IFlowApp implements AppHost {
     });
   }
 
-  private scheduleStreamingContentUpdate(): void {
-    this.visualUpdateScheduler.scheduleStreamingUpdate();
-  }
-
   private applyStreamingContentUpdate(): void {
     const shouldAutoScroll = this.isMessagesViewNearBottom();
     updateStreamingContentView({
-      conversation: this.getCurrentConversation(),
+      conversation: this.appState.getCurrentConversation(),
       fallbackRender: () => this.render(),
-      updatePendingIndicator: (container) => this.applyPendingIndicatorUpdate(container),
-      updateComposerStatusBar: () => this.updateComposerStatusBar(),
+      updatePendingIndicator: (container) =>
+        this.applyPendingIndicatorUpdate(container),
+      updateComposerStatusBar: () =>
+        updateComposerStatusBarView({
+          conversation: this.appState.getCurrentConversation(),
+          showModeMenu: this.appState.showModeMenu,
+          autoSizeSelect: (select) => this.autoSizeSelect(select),
+        }),
       scrollToBottom: () => {
         if (shouldAutoScroll) {
           this.scrollToBottom();
@@ -407,19 +356,23 @@ class IFlowApp implements AppHost {
   }
 
   private updateRoundFileChangesCard(): void {
-    const conversation = this.getCurrentConversation();
+    const conversation = this.appState.getCurrentConversation();
     if (!conversation) {
       return;
     }
 
-    const composer = document.querySelector('.composer') as HTMLElement | null;
+    const composer = document.querySelector(".composer") as HTMLElement | null;
     if (!composer) {
       return;
     }
 
-    const summary = this.appState.latestRoundChangesByConversationId.get(conversation.id);
+    const summary = this.appState.latestRoundChangesByConversationId.get(
+      conversation.id,
+    );
     const nextHtml = renderRoundFileChanges(summary);
-    const existing = composer.querySelector('.round-file-changes-card') as HTMLElement | null;
+    const existing = composer.querySelector(
+      ".round-file-changes-card",
+    ) as HTMLElement | null;
 
     if (!nextHtml) {
       existing?.remove();
@@ -430,33 +383,10 @@ class IFlowApp implements AppHost {
     if (existing) {
       existing.outerHTML = nextHtml;
     } else {
-      composer.insertAdjacentHTML('afterbegin', nextHtml);
+      composer.insertAdjacentHTML("afterbegin", nextHtml);
     }
     attachFileChangeReviewListeners(this);
     this.syncMessagesBottomInset();
-  }
-
-  private updateIDEContextChips(): void {
-    updateIDEContextChipsView({
-      ideContext: this.appState.ideContext,
-      ideContextDismissed: this.appState.ideContextDismissed,
-      onAfterPatch: () => {
-        attachIDEContextListeners(this);
-        this.syncMessagesBottomInset();
-      },
-    });
-  }
-
-  private updateComposerStatusBar(): void {
-    updateComposerStatusBarView({
-      conversation: this.getCurrentConversation(),
-      showModeMenu: this.appState.showModeMenu,
-      autoSizeSelect: (select) => this.autoSizeSelect(select),
-    });
-  }
-
-  private schedulePendingIndicatorUpdate(): void {
-    this.visualUpdateScheduler.schedulePendingIndicatorUpdate();
   }
 
   private applyPendingIndicatorUpdate(container?: Element): void {
@@ -477,32 +407,30 @@ class IFlowApp implements AppHost {
   }
 
   private updateSubagentProgress(message: ExtensionMessage): void {
-    if (message.type === 'streamChunk') {
+    if (message.type === "streamChunk") {
       const changed = this.subagentProgressTracker.onChunk(message.chunk);
       if (changed && (this.appState.state?.isStreaming ?? false)) {
-        this.schedulePendingIndicatorUpdate();
+        this.visualUpdateScheduler.schedulePendingIndicatorUpdate();
       }
       return;
     }
 
-    if (message.type === 'streamEnd' || message.type === 'streamError') {
+    const shouldReset =
+      message.type === "streamEnd" ||
+      message.type === "streamError" ||
+      (message.type === "stateUpdated" && !message.state.isStreaming);
+    if (shouldReset) {
       const changed = this.subagentProgressTracker.reset();
       if (changed) {
-        this.schedulePendingIndicatorUpdate();
-      }
-      return;
-    }
-
-    if (message.type === 'stateUpdated' && !message.state.isStreaming) {
-      const changed = this.subagentProgressTracker.reset();
-      if (changed) {
-        this.schedulePendingIndicatorUpdate();
+        this.visualUpdateScheduler.schedulePendingIndicatorUpdate();
       }
     }
   }
 
   private syncSubagentPendingTicker(): void {
-    const shouldRunTicker = (this.appState.state?.isStreaming ?? false) && this.subagentProgressTracker.active !== null;
+    const shouldRunTicker =
+      (this.appState.state?.isStreaming ?? false) &&
+      this.subagentProgressTracker.active !== null;
     if (!shouldRunTicker) {
       this.stopSubagentPendingTicker();
       return;
@@ -518,7 +446,7 @@ class IFlowApp implements AppHost {
         this.stopSubagentPendingTicker();
         return;
       }
-      this.schedulePendingIndicatorUpdate();
+      this.visualUpdateScheduler.schedulePendingIndicatorUpdate();
     }, SUBAGENT_PENDING_TICK_MS);
   }
 
@@ -530,39 +458,29 @@ class IFlowApp implements AppHost {
     this.subagentPendingTicker = null;
   }
 
-  private setupComposerLayoutObserver(): void {
-    this.lifecycle.setupComposerLayoutObserver(() => this.syncMessagesBottomInset());
-  }
-
   private syncMessagesBottomInset(): void {
-    const messages = (document.getElementById('messages-container') || document.querySelector('.messages')) as HTMLElement | null;
-    const composer = document.querySelector('.composer') as HTMLElement | null;
-    if (!messages || !composer) {
-      return;
-    }
-
-    const inset = Math.max(COMPOSER_MIN_INSET, composer.offsetHeight + COMPOSER_INSET_PADDING);
-    messages.style.paddingBottom = `${inset}px`;
+    const msgs = (document.getElementById("messages-container") ||
+      document.querySelector(".messages")) as HTMLElement | null;
+    const comp = document.querySelector(".composer") as HTMLElement | null;
+    if (!msgs || !comp) return;
+    msgs.style.paddingBottom = `${Math.max(COMPOSER_MIN_INSET, comp.offsetHeight + COMPOSER_INSET_PADDING)}px`;
   }
 
   private scrollToBottom(smooth = false): void {
-    const container = document.getElementById('messages-container');
-    if (container) {
-      container.scrollTo({
-        top: container.scrollHeight,
-        behavior: smooth ? 'smooth' : 'auto',
-      });
-    }
+    const el = document.getElementById("messages-container");
+    el?.scrollTo({
+      top: el.scrollHeight,
+      behavior: smooth ? "smooth" : "auto",
+    });
   }
 
   private isMessagesViewNearBottom(): boolean {
-    const container = document.getElementById('messages-container');
-    if (!container) {
-      return true;
-    }
-
-    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    return distanceToBottom <= STREAM_AUTO_SCROLL_THRESHOLD_PX;
+    const c = document.getElementById("messages-container");
+    if (!c) return true;
+    return (
+      c.scrollHeight - c.scrollTop - c.clientHeight <=
+      STREAM_AUTO_SCROLL_THRESHOLD_PX
+    );
   }
 
   dispose(): void {
@@ -574,8 +492,8 @@ class IFlowApp implements AppHost {
   }
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => new IFlowApp());
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => new IFlowApp());
 } else {
   new IFlowApp();
 }

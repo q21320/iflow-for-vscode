@@ -1,4 +1,4 @@
-import { Conversation, StreamChunk } from '../protocol';
+import { Conversation, StreamChunk } from "../protocol";
 
 export interface AppendAssistantOptions {
   notify?: boolean;
@@ -17,8 +17,6 @@ export interface SavedConversationState {
   cliDiagnostics?: string | null;
 }
 
-export interface ConversationStoreOptions {
-  useRuntimeSnapshot?: boolean;
-}
+export interface ConversationStoreOptions {}
 
-export type UsageChunk = Extract<StreamChunk, { chunkType: 'usage' }>;
+export type UsageChunk = Extract<StreamChunk, { chunkType: "usage" }>;

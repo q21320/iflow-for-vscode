@@ -1,31 +1,39 @@
 // AcpClient: ACP session lifecycle + public API facade.
 // Implements ACP (WebSocket + JSON-RPC 2.0) without SDK dependency.
 
-import * as vscode from 'vscode';
-import { StreamChunk } from '../../protocol';
-import { ChunkMapper } from '../../chunkMapper';
-import { AcpTransport } from '../../acpTransport';
-import { AcpProtocol } from '../../acpProtocol';
-import { ProcessManager } from '../../processManager';
-import { InteractionBridge } from '../interactionBridge';
-import { classifyAppErrorCode, toAppError } from '../../errorUtils';
-import { PathPolicy } from '../pathPolicy';
-import { RuntimeConfigApplier } from '../runtimeConfigApplier';
-import { SessionCoordinator } from '../sessionCoordinator';
-import { SettingsRepository } from '../settingsRepository';
-import { AcpDebugLogger } from '../debugLogger';
-import { ConnectionSnapshot, RunOptions } from '../types';
+import * as vscode from "vscode";
+import { StreamChunk } from "../../protocol";
+import { ChunkMapper } from "../../chunkMapper";
+import { AcpTransport } from "../../acpTransport";
+import { AcpProtocol } from "../../acpProtocol";
+import { ProcessManager } from "../../processManager";
+import { InteractionBridge } from "../interactionBridge";
+import { classifyAppErrorCode, toAppError } from "../../errorUtils";
+import { PathPolicy } from "../pathPolicy";
+import { RuntimeConfigApplier } from "../runtimeConfigApplier";
+import { SessionCoordinator } from "../sessionCoordinator";
+import { SettingsRepository } from "../settingsRepository";
+import { AcpDebugLogger } from "../debugLogger";
+import { ConnectionSnapshot, RunOptions } from "../types";
 import {
   CLI_VERSION_TIMEOUT_MS,
   DEFAULT_INTERACTION_TIMEOUT_MS,
-} from '../../constants/runtime';
-import { AcpUsageExtractor } from './acpUsageExtractor';
-import { AcpNotificationRouter } from './acpNotificationRouter';
-import { AcpRunExecutor } from './acpRunExecutor';
+} from "../../constants/runtime";
+import { AcpUsageExtractor } from "./acpUsageExtractor";
+import { AcpNotificationRouter } from "./acpNotificationRouter";
+import { AcpRunExecutor } from "./acpRunExecutor";
 
 /** Read a vscode config value with fallback. */
 function getConfig<T>(key: string, defaultValue: T): T {
-  return vscode.workspace.getConfiguration('iflow').get<T>(key, defaultValue);
+  return vscode.workspace.getConfiguration("iflow").get<T>(key, defaultValue);
+}
+
+export interface AcpClientDeps {
+  createTransport?: (log: (msg: string) => void) => AcpTransport;
+  createProtocol?: (
+    transport: AcpTransport,
+    log: (msg: string) => void,
+  ) => AcpProtocol;
 }
 
 export class AcpClient {
@@ -43,7 +51,15 @@ export class AcpClient {
   private readonly notificationRouter: AcpNotificationRouter;
   private readonly runExecutor: AcpRunExecutor;
 
-  constructor() {
+  constructor(deps: AcpClientDeps = {}) {
+    const transportFactory =
+      deps.createTransport ??
+      ((log: (msg: string) => void) => new AcpTransport(log));
+    const protocolFactory =
+      deps.createProtocol ??
+      ((transport: AcpTransport, log: (msg: string) => void) =>
+        new AcpProtocol(transport, log));
+
     this.debugLogger = new AcpDebugLogger(getConfig);
     this.chunkMapper = new ChunkMapper((msg) => this.log(msg));
     this.processManager = new ProcessManager(
@@ -53,13 +69,18 @@ export class AcpClient {
 
     this.settingsRepository = new SettingsRepository((msg) => this.log(msg));
     this.pathPolicy = new PathPolicy();
-    this.runtimeConfigApplier = new RuntimeConfigApplier((msg) => this.log(msg));
+    this.runtimeConfigApplier = new RuntimeConfigApplier((msg) =>
+      this.log(msg),
+    );
     this.interactionBridge = new InteractionBridge(
       (chunk) => this.emitChunk(chunk),
       (rawPath) => this.pathPolicy.ensureAllowedPath(rawPath),
       (msg) => this.log(msg),
       {
-        interactionTimeoutMs: getConfig<number>('interactionTimeoutMs', DEFAULT_INTERACTION_TIMEOUT_MS),
+        interactionTimeoutMs: getConfig<number>(
+          "interactionTimeoutMs",
+          DEFAULT_INTERACTION_TIMEOUT_MS,
+        ),
         enableLegacyQuestionBridge: false,
         // iflow CLI still emits _iflow/plan/exit in some plan-mode flows.
         enableLegacyPlanExitBridge: true,
@@ -67,11 +88,13 @@ export class AcpClient {
     );
 
     this.sessionCoordinator = new SessionCoordinator({
-      createTransport: () => this._createTransport(),
-      createProtocol: (transport) => this._createProtocol(transport),
+      createTransport: () => transportFactory((msg) => this.log(msg)),
+      createProtocol: (transport) =>
+        protocolFactory(transport, (msg) => this.log(msg)),
       getProcessManager: () => this.processManager,
       getConfig,
-      resolveAuthMethodOrder: (availableMethodIds) => this.resolveAuthMethodOrder(availableMethodIds),
+      resolveAuthMethodOrder: (availableMethodIds) =>
+        this.resolveAuthMethodOrder(availableMethodIds),
       runtimeConfigApplier: this.runtimeConfigApplier,
       interactionBridge: this.interactionBridge,
       log: (msg) => this.log(msg),
@@ -94,61 +117,36 @@ export class AcpClient {
       getConfig,
       log: (message) => this.log(message),
       updateIFlowCliModel: (model) => this.updateIFlowCliModel(model),
-      updateIFlowCliApiConfig: (baseUrl) => this.updateIFlowCliApiConfig(baseUrl),
+      updateIFlowCliApiConfig: (baseUrl) =>
+        this.updateIFlowCliApiConfig(baseUrl),
       isRunning: () => this.running,
-      setRunning: (running) => { this.running = running; },
-      setActiveChunkSink: (sink) => { this.activeChunkSink = sink; },
+      setRunning: (running) => {
+        this.running = running;
+      },
+      setActiveChunkSink: (sink) => {
+        this.activeChunkSink = sink;
+      },
       cancel: async () => this.sessionCoordinator.cancel(),
       isMissingSessionError: (error) => this.isMissingSessionError(error),
-      recoverMissingSession: async (options) => this.recoverMissingSession(options),
+      recoverMissingSession: async (options) =>
+        this.recoverMissingSession(options),
     });
   }
 
   // Backward-compat test hooks for legacy unit tests.
   get pendingPermissions(): Map<number, unknown> {
-    return this.interactionBridge.getPendingInteractionsForTests() as unknown as Map<number, unknown>;
+    return this.interactionBridge.getPendingInteractionsForTests() as unknown as Map<
+      number,
+      unknown
+    >;
   }
 
   set pendingPermissions(map: Map<number, unknown>) {
     this.interactionBridge.replacePendingInteractionsForTests(
-      map as unknown as ReturnType<InteractionBridge['getPendingInteractionsForTests']>
+      map as unknown as ReturnType<
+        InteractionBridge["getPendingInteractionsForTests"]
+      >,
     );
-  }
-
-  get protocol(): AcpProtocol | null {
-    return this.sessionCoordinator.currentProtocol;
-  }
-
-  set protocol(protocol: AcpProtocol | null) {
-    this.sessionCoordinator.setConnectionForTests({ protocol });
-  }
-
-  get isConnected(): boolean {
-    return this.sessionCoordinator.currentIsConnected;
-  }
-
-  set isConnected(isConnected: boolean) {
-    this.sessionCoordinator.setConnectionForTests({ isConnected });
-  }
-
-  get sessionId(): string | null {
-    return this.sessionCoordinator.currentSessionId;
-  }
-
-  set sessionId(sessionId: string | null) {
-    this.sessionCoordinator.setConnectionForTests({ sessionId });
-  }
-
-  // ── Factory methods (overridable for tests) ─────────────────────────
-
-  /** Create the WebSocket transport layer. */
-  _createTransport(): AcpTransport {
-    return new AcpTransport((msg) => this.log(msg));
-  }
-
-  /** Create the JSON-RPC protocol layer on top of a transport. */
-  _createProtocol(transport: AcpTransport): AcpProtocol {
-    return new AcpProtocol(transport, (msg) => this.log(msg));
   }
 
   // ── Public API ──────────────────────────────────────────────────────
@@ -157,23 +155,30 @@ export class AcpClient {
    * Check if the iFlow CLI is available and return its version.
    * Uses ProcessManager to auto-detect CLI path and Node.js.
    */
-  async checkAvailability(): Promise<{ version: string | null; diagnostics: string }> {
+  async checkAvailability(): Promise<{
+    version: string | null;
+    diagnostics: string;
+  }> {
     try {
       const startInfo = await this.processManager.resolveStartMode({
-        nodePath: getConfig<string | null>('nodePath', null),
-        port: getConfig<number>('port', 8090),
+        nodePath: getConfig<string | null>("nodePath", null),
+        port: getConfig<number>("port", 8090),
       });
 
       if (!startInfo) {
         return {
           version: null,
-          diagnostics: 'iFlow CLI not found. Please install iFlow CLI (npm i -g @iflow-ai/iflow-cli) and ensure it is in your PATH.',
+          diagnostics:
+            "iFlow CLI not found. Please install iFlow CLI (npm i -g @iflow-ai/iflow-cli) and ensure it is in your PATH.",
         };
       }
 
-      const version = await this.getCliVersion(startInfo.nodePath, startInfo.iflowScript);
+      const version = await this.getCliVersion(
+        startInfo.nodePath,
+        startInfo.iflowScript,
+      );
       return {
-        version: version ?? 'unknown',
+        version: version ?? "unknown",
         diagnostics: version
           ? `iFlow CLI v${version} found at ${startInfo.iflowScript}`
           : `iFlow CLI found at ${startInfo.iflowScript} (version unknown)`,
@@ -249,13 +254,15 @@ export class AcpClient {
   // ── Settings I/O (overridable for tests) ────────────────────────────
 
   /** Update the model in iFlow CLI's settings file. */
-  updateIFlowCliModel(model: RunOptions['model']): void {
+  updateIFlowCliModel(model: RunOptions["model"]): void {
     this.settingsRepository.updateModel(model);
   }
 
   /** Update the API base URL in iFlow CLI's settings file. */
   updateIFlowCliApiConfig(_baseUrl: string | undefined): void {
-    this.settingsRepository.updateBaseUrl(getConfig<string | null>('baseUrl', null));
+    this.settingsRepository.updateBaseUrl(
+      getConfig<string | null>("baseUrl", null),
+    );
   }
 
   // ── Private helpers ─────────────────────────────────────────────────
@@ -270,23 +277,45 @@ export class AcpClient {
 
   private resolveAuthMethodOrder(availableMethodIds: string[]): string[] {
     const selectedAuthType = this.settingsRepository.getSelectedAuthType();
+
+    // Only allow selectedAuthType to take priority over the built-in defaults
+    // when it is a distinct custom auth method (not the built-in "iflow" API-key
+    // auth, which must never be preferred over "oauth-iflow"). When the user has
+    // selectedAuthType="iflow" in their settings file the extension would
+    // otherwise authenticate with the legacy API-key path first, causing the
+    // CLI to return an empty response because the OAuth session is never
+    // established.
+    const builtInAuthTypes = new Set([
+      "oauth-iflow",
+      "iflow",
+      "openai-compatible",
+    ]);
+    const effectiveSelectedType =
+      typeof selectedAuthType === "string" &&
+      selectedAuthType.length > 0 &&
+      !builtInAuthTypes.has(selectedAuthType)
+        ? selectedAuthType
+        : null;
+
     const requested = [
-      selectedAuthType,
-      'oauth-iflow',
-      'iflow',
-      'openai-compatible',
-    ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+      effectiveSelectedType,
+      "oauth-iflow",
+      "iflow",
+      "openai-compatible",
+    ].filter((id): id is string => typeof id === "string" && id.length > 0);
 
     if (availableMethodIds.length === 0) {
       return requested;
     }
 
     const availableSet = new Set(availableMethodIds);
-    return requested.filter((id, index) => requested.indexOf(id) === index && availableSet.has(id));
+    return requested.filter(
+      (id, index) => requested.indexOf(id) === index && availableSet.has(id),
+    );
   }
 
   private isMissingSessionError(error: unknown): boolean {
-    return classifyAppErrorCode(error) === 'MISSING_SESSION';
+    return classifyAppErrorCode(error) === "MISSING_SESSION";
   }
 
   private async recoverMissingSession(
@@ -299,38 +328,52 @@ export class AcpClient {
     const protocol = this.sessionCoordinator.currentProtocol;
     const sessionId = this.sessionCoordinator.currentSessionId;
     if (!protocol || !sessionId) {
-      throw new Error('Failed to recover ACP session after session-not-found');
+      throw new Error("Failed to recover ACP session after session-not-found");
     }
     return { protocol, sessionId };
   }
 
-  private handleConnectionStateChange(snapshot: ConnectionSnapshot, reason: string, error?: Error): void {
-    const session = snapshot.sessionId ?? 'n/a';
-    this.log(`ACP connection state: status=${snapshot.status}, reason=${reason}, sessionId=${session}`);
+  private handleConnectionStateChange(
+    snapshot: ConnectionSnapshot,
+    reason: string,
+    error?: Error,
+  ): void {
+    const session = snapshot.sessionId ?? "n/a";
+    this.log(
+      `ACP connection state: status=${snapshot.status}, reason=${reason}, sessionId=${session}`,
+    );
 
-    if (reason !== 'closed') {
+    if (reason !== "closed") {
       return;
     }
 
     const warning = error?.message
       ? `ACP connection closed unexpectedly: ${error.message}`
-      : 'ACP connection closed unexpectedly.';
-    this.emitChunk({ chunkType: 'warning', message: warning });
+      : "ACP connection closed unexpectedly.";
+    this.emitChunk({ chunkType: "warning", message: warning });
   }
 
   /** Get the iFlow CLI version by running: node <script> --version */
-  private async getCliVersion(nodePath: string, iflowScript: string): Promise<string | null> {
-    const cp = await import('child_process');
+  private async getCliVersion(
+    nodePath: string,
+    iflowScript: string,
+  ): Promise<string | null> {
+    const cp = await import("child_process");
     return new Promise((resolve) => {
-      cp.execFile(nodePath, [iflowScript, '--version'], { timeout: CLI_VERSION_TIMEOUT_MS }, (err, stdout) => {
-        if (err) {
-          this.log(`Version check failed: ${err.message}`);
-          resolve(null);
-          return;
-        }
-        const match = stdout.trim().match(/[\d]+\.[\d]+\.[\d]+/);
-        resolve(match ? match[0] : stdout.trim() || null);
-      });
+      cp.execFile(
+        nodePath,
+        [iflowScript, "--version"],
+        { timeout: CLI_VERSION_TIMEOUT_MS },
+        (err, stdout) => {
+          if (err) {
+            this.log(`Version check failed: ${err.message}`);
+            resolve(null);
+            return;
+          }
+          const match = stdout.trim().match(/[\d]+\.[\d]+\.[\d]+/);
+          resolve(match ? match[0] : stdout.trim() || null);
+        },
+      );
     });
   }
 }

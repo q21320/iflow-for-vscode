@@ -1,34 +1,44 @@
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { ModelType } from '../protocol';
+import * as os from "os";
+import * as path from "path";
+import { ModelType } from "../protocol";
+import { normalizeErrorMessage } from "../errorUtils";
+import { JsonFileStore } from "../shared/jsonFileStore";
 
 export class SettingsRepository {
-  constructor(private readonly log: (message: string) => void) {}
+  private readonly store: JsonFileStore;
+
+  constructor(private readonly log: (message: string) => void) {
+    this.store = new JsonFileStore(
+      path.join(os.homedir(), ".iflow", "settings.json"),
+      log,
+    );
+  }
 
   getSelectedAuthType(): string | null {
     try {
-      const { settings } = this.readSettings();
+      const settings = this.store.read();
       const selectedAuthType = settings.selectedAuthType;
-      if (typeof selectedAuthType !== 'string') {
+      if (typeof selectedAuthType !== "string") {
         return null;
       }
       const normalized = selectedAuthType.trim();
       return normalized.length > 0 ? normalized : null;
     } catch (err: unknown) {
-      this.log(`Failed to read selected auth type: ${err instanceof Error ? err.message : String(err)}`);
+      this.log(
+        `Failed to read selected auth type: ${normalizeErrorMessage(err)}`,
+      );
       return null;
     }
   }
 
   updateModel(model: ModelType): void {
     try {
-      const { settings, path: settingsPath } = this.readSettings();
+      const settings = this.store.read();
       if (settings.modelName !== model) {
-        this.writeSettings({ ...settings, modelName: model }, settingsPath);
+        this.store.write({ ...settings, modelName: model });
       }
     } catch (err: unknown) {
-      this.log(`Failed to update model: ${err instanceof Error ? err.message : String(err)}`);
+      this.log(`Failed to update model: ${normalizeErrorMessage(err)}`);
     }
   }
 
@@ -37,51 +47,12 @@ export class SettingsRepository {
       if (!baseUrl) {
         return;
       }
-      const { settings, path: settingsPath } = this.readSettings();
+      const settings = this.store.read();
       if (settings.baseUrl !== baseUrl) {
-        this.writeSettings({ ...settings, baseUrl }, settingsPath);
+        this.store.write({ ...settings, baseUrl });
       }
     } catch (err: unknown) {
-      this.log(`Failed to update API config: ${err instanceof Error ? err.message : String(err)}`);
+      this.log(`Failed to update API config: ${normalizeErrorMessage(err)}`);
     }
-  }
-
-  private readSettings(): { settings: Record<string, unknown>; path: string } {
-    const settingsPath = this.getIFlowSettingsPath();
-    const dir = path.dirname(settingsPath);
-
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    if (!fs.existsSync(settingsPath)) {
-      return { settings: {}, path: settingsPath };
-    }
-
-    try {
-      const content = fs.readFileSync(settingsPath, 'utf-8');
-      return { settings: JSON.parse(content), path: settingsPath };
-    } catch (err: unknown) {
-      this.log(`Failed to parse settings at ${settingsPath}, returning empty: ${err instanceof Error ? err.message : String(err)}`);
-      return { settings: {}, path: settingsPath };
-    }
-  }
-
-  private writeSettings(settings: Record<string, unknown>, settingsPath: string): boolean {
-    try {
-      const dir = path.dirname(settingsPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-      return true;
-    } catch (err: unknown) {
-      this.log(`Failed to write settings: ${err instanceof Error ? err.message : String(err)}`);
-      return false;
-    }
-  }
-
-  private getIFlowSettingsPath(): string {
-    return path.join(os.homedir(), '.iflow', 'settings.json');
   }
 }

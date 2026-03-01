@@ -1,20 +1,32 @@
 // Process lifecycle management for the iFlow CLI subprocess.
 
-import * as cp from 'child_process';
-import { findIFlowPathCrossPlatform, resolveIFlowScriptCrossPlatform, deriveNodePathFromIFlow } from './cliDiscovery';
+import * as cp from "child_process";
+import WebSocket = require("ws");
+import {
+  findIFlowPathCrossPlatform,
+  resolveIFlowScriptCrossPlatform,
+  deriveNodePathFromIFlow,
+} from "./cliDiscovery";
 import {
   PROCESS_FORCE_KILL_TIMEOUT_MS,
   PROCESS_WS_MAX_ATTEMPTS,
   PROCESS_WS_RETRY_INTERVAL_MS,
-} from './constants/runtime';
-import { findAvailablePort, isPortAvailable, resolveStartupPort } from './process/portDiscovery';
+} from "./constants/runtime";
+import {
+  findAvailablePort,
+  isPortAvailable,
+  resolveStartupPort,
+} from "./process/portDiscovery";
 import {
   buildStartupFailureMessage,
   extractManagedPort,
   isAddressInUseError,
   isReadySignal,
-} from './process/startupSignals';
-import { waitForWebSocketReadiness, type WebSocketFactory } from './process/webSocketReadinessProbe';
+} from "./process/startupSignals";
+import {
+  waitForWebSocketReadiness,
+  type WebSocketFactory,
+} from "./process/webSocketReadinessProbe";
 
 // ── Process lifecycle constants ──────────────────────────────────────
 const PROCESS_STARTUP_TIMEOUT_MS = 30_000;
@@ -46,7 +58,12 @@ export class ProcessManager {
   private managedProcess: cp.ChildProcess | null = null;
   private managedPort: number | null = null;
   // Auto-detection cache: undefined = not attempted, null = attempted & failed, object = success
-  private _cachedAutoDetect: { nodePath: string; iflowScript: string } | null | undefined = undefined;
+  private _cachedAutoDetect:
+    | { nodePath: string; iflowScript: string }
+    | null
+    | undefined = undefined;
+  // CLI path cache: undefined = not attempted, null = attempted & failed, string = success
+  private _cachedIflowPath: string | null | undefined = undefined;
   private readonly spawnProcess: SpawnFn;
   private readonly createWebSocket: WebSocketFactory;
   private readonly checkPortAvailable: (port: number) => Promise<boolean>;
@@ -58,7 +75,9 @@ export class ProcessManager {
     deps: ProcessManagerDependencies = {},
   ) {
     this.spawnProcess = deps.spawn ?? cp.spawn;
-    this.createWebSocket = deps.createWebSocket ?? ((url, options) => this.createDefaultWebSocket(url, options));
+    this.createWebSocket =
+      deps.createWebSocket ??
+      ((url, options) => this.createDefaultWebSocket(url, options));
     this.checkPortAvailable = deps.isPortAvailable ?? isPortAvailable;
     this.allocateAvailablePort = deps.findAvailablePort ?? findAvailablePort;
   }
@@ -79,18 +98,23 @@ export class ProcessManager {
    * Auto-detect Node.js and iFlow script paths from the iFlow CLI location.
    * Results are cached per instance.
    */
-  async autoDetectNodePath(): Promise<{ nodePath: string; iflowScript: string } | null> {
+  async autoDetectNodePath(): Promise<{
+    nodePath: string;
+    iflowScript: string;
+  } | null> {
     // undefined = not yet attempted; null = attempted and failed
     if (this._cachedAutoDetect !== undefined) {
       return this._cachedAutoDetect;
     }
 
     const logFn = this.logInfo;
-    this.logInfo('Attempting auto-detection of Node.js path from iflow CLI location');
+    this.logInfo(
+      "Attempting auto-detection of Node.js path from iflow CLI location",
+    );
 
-    const iflowPath = await findIFlowPathCrossPlatform(logFn);
+    const iflowPath = await this.findIFlowPathCached();
     if (!iflowPath) {
-      this.logInfo('Auto-detection: iflow CLI not found in PATH or APPDATA');
+      this.logInfo("Auto-detection: iflow CLI not found in PATH or APPDATA");
       this._cachedAutoDetect = null;
       return null;
     }
@@ -99,18 +123,28 @@ export class ProcessManager {
 
     const iflowScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
     if (!iflowScript) {
-      this.logInfo('Auto-detection: failed to resolve iFlow script from CLI wrapper');
+      this.logInfo(
+        "Auto-detection: failed to resolve iFlow script from CLI wrapper",
+      );
       this._cachedAutoDetect = null;
       return null;
     }
 
-    const nodePath = await deriveNodePathFromIFlow(iflowPath, logFn, iflowScript);
+    const nodePath = await deriveNodePathFromIFlow(
+      iflowPath,
+      logFn,
+      iflowScript,
+    );
     if (!nodePath) {
-      this.logInfo('Auto-detection: could not derive node path from iflow location');
+      this.logInfo(
+        "Auto-detection: could not derive node path from iflow location",
+      );
       this._cachedAutoDetect = null;
       return null;
     }
-    this.logInfo(`Auto-detection successful: node=${nodePath}, script=${iflowScript}`);
+    this.logInfo(
+      `Auto-detection successful: node=${nodePath}, script=${iflowScript}`,
+    );
 
     this._cachedAutoDetect = { nodePath, iflowScript };
     return this._cachedAutoDetect;
@@ -122,19 +156,23 @@ export class ProcessManager {
    * Tier 2: Auto-detected from iflow CLI location
    * Tier 3: null (caller decides how to proceed)
    */
-  async resolveStartMode(config: ProcessManagerConfig): Promise<ManualStartInfo | null> {
+  async resolveStartMode(
+    config: ProcessManagerConfig,
+  ): Promise<ManualStartInfo | null> {
     const logFn = this.logInfo;
 
-    // Tier 1: User-configured nodePath
+    // Tier 1: User-configured nodePath (uses cached CLI path lookup)
     if (config.nodePath) {
       this.log(`Using user-configured nodePath: ${config.nodePath}`);
-      const iflowPath = await findIFlowPathCrossPlatform(logFn);
+      const iflowPath = await this.findIFlowPathCached();
       if (!iflowPath) {
-        throw new Error('iFlow CLI not found. Please install iFlow CLI first.');
+        throw new Error("iFlow CLI not found. Please install iFlow CLI first.");
       }
       const iflowScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
       if (!iflowScript) {
-        throw new Error('Failed to resolve iFlow CLI script path from wrapper.');
+        throw new Error(
+          "Failed to resolve iFlow CLI script path from wrapper.",
+        );
       }
       return { nodePath: config.nodePath, iflowScript, port: config.port };
     }
@@ -151,12 +189,15 @@ export class ProcessManager {
     }
 
     // Tier 3: No manual start path available.
-    this.log('No manual node path available from user config or auto-detection');
+    this.log(
+      "No manual node path available from user config or auto-detection",
+    );
     return null;
   }
 
   clearAutoDetectCache(): void {
     this._cachedAutoDetect = undefined;
+    this._cachedIflowPath = undefined;
   }
 
   // ── Process management ──────────────────────────────────────────────
@@ -175,13 +216,17 @@ export class ProcessManager {
   ): Promise<number> {
     if (!iflowScript) {
       const logFn = this.logInfo;
-      const iflowPath = await findIFlowPathCrossPlatform(logFn);
+      const iflowPath = await this.findIFlowPathCached();
       if (!iflowPath) {
-        throw new Error('iFlow CLI not found in PATH. Please install iFlow CLI first.');
+        throw new Error(
+          "iFlow CLI not found in PATH. Please install iFlow CLI first.",
+        );
       }
       const resolvedScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
       if (!resolvedScript) {
-        throw new Error('Failed to resolve iFlow CLI script path from wrapper.');
+        throw new Error(
+          "Failed to resolve iFlow CLI script path from wrapper.",
+        );
       }
       iflowScript = resolvedScript;
     }
@@ -193,7 +238,9 @@ export class ProcessManager {
         findAvailablePort: this.allocateAvailablePort,
       });
       if (startupPort !== port) {
-        this.log(`ACP configured port ${port} is busy; falling back to available port ${startupPort}`);
+        this.log(
+          `ACP configured port ${port} is busy; falling back to available port ${startupPort}`,
+        );
       }
     }
 
@@ -215,7 +262,9 @@ export class ProcessManager {
         throw err;
       }
 
-      this.log(`ACP port ${startupPort} became unavailable during startup; retrying with port ${retryPort}`);
+      this.log(
+        `ACP port ${startupPort} became unavailable during startup; retrying with port ${retryPort}`,
+      );
       return this.startManagedProcessOnPort(
         nodePath,
         retryPort,
@@ -234,16 +283,16 @@ export class ProcessManager {
     enableStream = true,
   ): Promise<number> {
     this.log(
-      `Starting iFlow with Node: ${nodePath}, script: ${iflowScript}, port: ${port}, stream=${enableStream}`
+      `Starting iFlow with Node: ${nodePath}, script: ${iflowScript}, port: ${port}, stream=${enableStream}`,
     );
     this.log(
-      `Command: ${nodePath} ${iflowScript} --experimental-acp --port ${port}${enableStream ? ' --stream' : ''}`
+      `Command: ${nodePath} ${iflowScript} --experimental-acp --port ${port}${enableStream ? " --stream" : ""}`,
     );
 
     return new Promise((resolve, reject) => {
-      const args = [iflowScript!, '--experimental-acp', '--port', String(port)];
+      const args = [iflowScript!, "--experimental-acp", "--port", String(port)];
       if (enableStream) {
-        args.push('--stream');
+        args.push("--stream");
       }
 
       // Buffer to collect output for error reporting
@@ -252,7 +301,7 @@ export class ProcessManager {
       this.managedProcess = this.spawnProcess(nodePath, args, {
         cwd: cwd ?? process.cwd(),
         env: { ...process.env },
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: ["pipe", "pipe", "pipe"],
       });
 
       let settled = false;
@@ -284,17 +333,19 @@ export class ProcessManager {
         const parsedPort = extractManagedPort(output);
         if (parsedPort !== null && parsedPort !== effectivePort) {
           effectivePort = parsedPort;
-          this.log(`Detected managed ACP port from CLI output: ${effectivePort}`);
+          this.log(
+            `Detected managed ACP port from CLI output: ${effectivePort}`,
+          );
         }
       };
 
       const timeout = setTimeout(() => {
         if (!started) {
-          settleReject(new Error('iFlow process startup timeout'));
+          settleReject(new Error("iFlow process startup timeout"));
         }
       }, PROCESS_STARTUP_TIMEOUT_MS);
 
-      this.managedProcess.stdout?.on('data', (data: Buffer) => {
+      this.managedProcess.stdout?.on("data", (data: Buffer) => {
         const output = data.toString();
         ingestOutput(output);
         stdoutBuffer.push(output);
@@ -311,7 +362,7 @@ export class ProcessManager {
         }
       });
 
-      this.managedProcess.stderr?.on('data', (data: Buffer) => {
+      this.managedProcess.stderr?.on("data", (data: Buffer) => {
         const output = data.toString();
         ingestOutput(output);
         stderrBuffer.push(output);
@@ -327,30 +378,9 @@ export class ProcessManager {
         }
       });
 
-      this.managedProcess.on('error', (err) => {
+      this.managedProcess.on("error", (err) => {
         this.log(`iFlow process error: ${err.message}`);
         settleReject(new Error(`Failed to start iFlow: ${err.message}`));
-      });
-
-      this.managedProcess.on('exit', (code) => {
-        this.log(`iFlow process exited with code: ${code}`);
-        if (!started && !settled) {
-          settleReject(new Error(buildStartupFailureMessage(code, stdoutBuffer, stderrBuffer, port)));
-        }
-
-        // Process has exited; ensure cached state is reset.
-        this.managedPort = null;
-
-        if (!started) {
-          // Log collected output for debugging
-          if (stdoutBuffer.length > 0) {
-            this.log(`[iFlow stdout buffer]\n${stdoutBuffer.join('')}`);
-          }
-          if (stderrBuffer.length > 0) {
-            this.log(`[iFlow stderr buffer]\n${stderrBuffer.join('')}`);
-          }
-        }
-        this.managedProcess = null;
       });
 
       // If no ready signal, try to connect via WebSocket to confirm server is ready
@@ -362,7 +392,11 @@ export class ProcessManager {
           retryIntervalMs: PROCESS_WS_RETRY_INTERVAL_MS,
           handshakeTimeoutMs: PROCESS_WS_HANDSHAKE_TIMEOUT_MS,
           connectionTimeoutMs: PROCESS_READY_FALLBACK_MS,
-          isCancelled: () => started || settled || !this.managedProcess || this.managedProcess.killed,
+          isCancelled: () =>
+            started ||
+            settled ||
+            !this.managedProcess ||
+            this.managedProcess.killed,
           onFirstFailure: (message) => {
             this.log(`[WebSocket check] Attempt 1 failed: ${message}`);
           },
@@ -371,8 +405,8 @@ export class ProcessManager {
         if (readiness.ready) {
           if (!started) {
             this.log(
-              `[process ready] WebSocket connection confirmed on port ${effectivePort} `
-              + `after ${readiness.attempts} attempt(s)`
+              `[process ready] WebSocket connection confirmed on port ${effectivePort} ` +
+                `after ${readiness.attempts} attempt(s)`,
             );
             settleResolve();
           }
@@ -380,7 +414,9 @@ export class ProcessManager {
         }
 
         if (!started && !settled) {
-          this.log(`[process warning] WebSocket not ready after ${PROCESS_WS_MAX_ATTEMPTS} attempts, proceeding anyway`);
+          this.log(
+            `[process warning] WebSocket not ready after ${PROCESS_WS_MAX_ATTEMPTS} attempts, proceeding anyway`,
+          );
           settleResolve();
         }
       };
@@ -392,9 +428,36 @@ export class ProcessManager {
         }
       }, PROCESS_INIT_DELAY_MS);
 
-      // Cleanup timeout if process exits early
-      this.managedProcess.on('exit', () => {
+      // Consolidated exit listener: handles rejection, cleanup, and timeout cancellation
+      this.managedProcess.on("exit", (code) => {
         clearTimeout(initTimeout);
+        this.log(`iFlow process exited with code: ${code}`);
+        if (!started && !settled) {
+          settleReject(
+            new Error(
+              buildStartupFailureMessage(
+                code,
+                stdoutBuffer,
+                stderrBuffer,
+                port,
+              ),
+            ),
+          );
+        }
+
+        // Process has exited; ensure cached state is reset.
+        this.managedPort = null;
+
+        if (!started) {
+          // Log collected output for debugging
+          if (stdoutBuffer.length > 0) {
+            this.log(`[iFlow stdout buffer]\n${stdoutBuffer.join("")}`);
+          }
+          if (stderrBuffer.length > 0) {
+            this.log(`[iFlow stderr buffer]\n${stderrBuffer.join("")}`);
+          }
+        }
+        this.managedProcess = null;
       });
     });
   }
@@ -405,29 +468,37 @@ export class ProcessManager {
    */
   stopManagedProcess(): void {
     if (this.managedProcess) {
-      this.log('Stopping managed iFlow process');
-      if (process.platform === 'win32') {
+      this.log("Stopping managed iFlow process");
+      if (process.platform === "win32") {
         try {
-          cp.execSync(
-            `taskkill /F /T /PID ${this.managedProcess.pid}`,
-            { windowsHide: true, timeout: PROCESS_FORCE_KILL_TIMEOUT_MS, stdio: 'ignore' }
-          );
+          cp.execSync(`taskkill /F /T /PID ${this.managedProcess.pid}`, {
+            windowsHide: true,
+            timeout: PROCESS_FORCE_KILL_TIMEOUT_MS,
+            stdio: "ignore",
+          });
         } catch {
           // Process may have already exited
         }
       } else {
-        this.managedProcess.kill('SIGTERM');
+        this.managedProcess.kill("SIGTERM");
       }
       this.managedProcess = null;
       this.managedPort = null;
     }
   }
 
+  private async findIFlowPathCached(): Promise<string | null> {
+    if (this._cachedIflowPath !== undefined) {
+      return this._cachedIflowPath;
+    }
+    this._cachedIflowPath = await findIFlowPathCrossPlatform(this.logInfo);
+    return this._cachedIflowPath;
+  }
+
   private createDefaultWebSocket(
     url: string,
     options?: { handshakeTimeout?: number },
   ): ReturnType<WebSocketFactory> {
-    const WebSocketCtor = require('ws') as typeof import('ws');
-    return new WebSocketCtor(url, undefined, options);
+    return new WebSocket(url, undefined, options);
   }
 }

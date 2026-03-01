@@ -1,10 +1,11 @@
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import * as vscode from 'vscode';
-import { RoundFileChange, RoundFileChangeSummary } from '../../protocol';
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import * as vscode from "vscode";
+import { RoundFileChange, RoundFileChangeSummary } from "../../protocol";
 import {
   DIFF_SCHEME,
+  DiffUriContext,
   FileChangeActionParams,
   FileChangeReviewServiceDeps,
   FileSnapshot,
@@ -13,7 +14,7 @@ import {
   SnapshotMap,
   SummaryMap,
   VIRTUAL_URI_PARSE_AVAILABLE,
-} from './types';
+} from "./types";
 
 export class FileChangeDiffService {
   constructor(
@@ -23,9 +24,11 @@ export class FileChangeDiffService {
     private readonly latestSnapshotsByConversationId: SnapshotMap,
   ) {}
 
-  async handleAction(params: FileChangeActionParams): Promise<RoundFileChangeSummary> {
+  async handleAction(
+    params: FileChangeActionParams,
+  ): Promise<RoundFileChangeSummary> {
     switch (params.action) {
-      case 'openDiff':
+      case "openDiff":
         await this.openDiff(
           params.conversationId,
           params.assistantMessageId,
@@ -36,15 +39,15 @@ export class FileChangeDiffService {
           params.assistantMessageId,
         );
 
-      case 'approve':
+      case "approve":
         return this.updateStatus(
           params.conversationId,
           params.assistantMessageId,
           params.path,
-          'accepted',
+          "accepted",
         );
 
-      case 'rollback':
+      case "rollback":
         await this.rollbackFile(
           params.conversationId,
           params.assistantMessageId,
@@ -54,7 +57,7 @@ export class FileChangeDiffService {
           params.conversationId,
           params.assistantMessageId,
           params.path,
-          'reverted',
+          "reverted",
         );
     }
   }
@@ -89,7 +92,9 @@ export class FileChangeDiffService {
   ): RoundFileChangeSummary {
     const summary = this.latestSummaryByConversationId.get(conversationId);
     if (!summary || summary.assistantMessageId !== assistantMessageId) {
-      throw new Error('No file-change summary available for this conversation round');
+      throw new Error(
+        "No file-change summary available for this conversation round",
+      );
     }
     return summary;
   }
@@ -124,7 +129,7 @@ export class FileChangeDiffService {
       await fs.promises.writeFile(
         absolutePath,
         snapshot.beforeContent,
-        'utf-8',
+        "utf-8",
       );
       return;
     }
@@ -146,56 +151,48 @@ export class FileChangeDiffService {
     );
 
     const token = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const beforeUri = this.createVirtualOrTempUri(
+    const beforeUri = this.createVirtualOrTempUri({
       absolutePath,
       conversationId,
       assistantMessageId,
-      'before',
+      side: "before",
       token,
-      snapshot.beforeContent,
-      `iflow-review-before-${token}-${path.basename(absolutePath)}`,
-    );
+      content: snapshot.beforeContent,
+      tempFileName: `iflow-review-before-${token}-${path.basename(absolutePath)}`,
+    });
 
     let afterUri: vscode.Uri;
     if (fs.existsSync(absolutePath)) {
       afterUri = vscode.Uri.file(absolutePath);
     } else {
-      afterUri = this.createVirtualOrTempUri(
+      afterUri = this.createVirtualOrTempUri({
         absolutePath,
         conversationId,
         assistantMessageId,
-        'after',
+        side: "after",
         token,
-        '',
-        `iflow-review-after-${token}-${path.basename(absolutePath)}`,
-      );
+        content: "",
+        tempFileName: `iflow-review-after-${token}-${path.basename(absolutePath)}`,
+      });
     }
 
     this.pruneVirtualDocs();
 
     const title = `Rollback Preview: ${path.basename(absolutePath)}`;
-    await this.deps.executeCommand('vscode.diff', beforeUri, afterUri, title);
+    await this.deps.executeCommand("vscode.diff", beforeUri, afterUri, title);
   }
 
-  createVirtualOrTempUri(
-    absolutePath: string,
-    conversationId: string,
-    assistantMessageId: string,
-    side: 'before' | 'after',
-    token: string,
-    content: string,
-    tempFileName: string,
-  ): vscode.Uri {
+  createVirtualOrTempUri(ctx: DiffUriContext): vscode.Uri {
     if (VIRTUAL_URI_PARSE_AVAILABLE) {
       const uri = vscode.Uri.parse(
-        `${DIFF_SCHEME}:/snapshot?path=${encodeURIComponent(absolutePath)}&conversation=${encodeURIComponent(conversationId)}&round=${encodeURIComponent(assistantMessageId)}&side=${side}&token=${token}`,
+        `${DIFF_SCHEME}:/snapshot?path=${encodeURIComponent(ctx.absolutePath)}&conversation=${encodeURIComponent(ctx.conversationId)}&round=${encodeURIComponent(ctx.assistantMessageId)}&side=${ctx.side}&token=${ctx.token}`,
       );
-      this.virtualContents.set(uri.toString(), content);
+      this.virtualContents.set(uri.toString(), ctx.content);
       return uri;
     }
 
-    const tempPath = path.join(os.tmpdir(), tempFileName);
-    fs.writeFileSync(tempPath, content, 'utf-8');
+    const tempPath = path.join(os.tmpdir(), ctx.tempFileName);
+    fs.writeFileSync(tempPath, ctx.content, "utf-8");
     return vscode.Uri.file(tempPath);
   }
 
@@ -205,9 +202,13 @@ export class FileChangeDiffService {
     }
 
     const removeCount = this.virtualContents.size - MAX_VIRTUAL_DOCS;
-    const keys = Array.from(this.virtualContents.keys()).slice(0, removeCount);
-    for (const key of keys) {
+    let removed = 0;
+    for (const key of this.virtualContents.keys()) {
       this.virtualContents.delete(key);
+      removed++;
+      if (removed >= removeCount) {
+        break;
+      }
     }
   }
 }

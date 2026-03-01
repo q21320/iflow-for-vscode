@@ -1,6 +1,6 @@
-import * as vscode from 'vscode';
-import { OutputChannelLogger } from '../shared/logger';
-import { isObject } from '../shared/typeGuards';
+import * as vscode from "vscode";
+import { OutputChannelLogger } from "../shared/logger";
+import { isObject } from "../shared/typeGuards";
 
 const ACP_DEBUG_LOG_MAX_CHARS = 8000;
 
@@ -15,36 +15,46 @@ export class AcpDebugLogger {
     private readonly getConfig: <T>(key: string, defaultValue: T) => T,
   ) {
     this.logger = new OutputChannelLogger(
-      { component: 'IFlow' },
+      { component: "IFlow" },
       {
-        createChannel: () => vscode.window.createOutputChannel('IFlow'),
-        getDebugLoggingEnabled: () => this.getConfig<boolean>('debugLogging', false),
+        createChannel: () => vscode.window.createOutputChannel("IFlow"),
+        getDebugLoggingEnabled: () =>
+          this.getConfig<boolean>("debugLogging", false),
       },
     );
   }
 
   log(msg: string): void {
     this.logger.info(msg);
-
-    if (this.getConfig<boolean>('debugLogging', false)) {
-      console.log(`[IFlow] ${msg}`);
-    }
   }
 
   dispose(): void {
     this.logger.dispose();
   }
 
-  logSessionUpdateDebug(params: unknown, envelope: unknown, update: unknown): void {
-    const safeEnvelope = isObject(envelope) ? envelope as AcpNotificationEnvelopeLike : {};
-    const sessionId = typeof safeEnvelope.sessionId === 'string' ? safeEnvelope.sessionId : 'unknown';
-    this.log(`[ACP] session/update (sessionId=${sessionId}) ${this.summarizeSessionUpdate(update)}`);
-    if (this.getConfig<boolean>('debugSessionUpdateOnly', false)) {
+  logSessionUpdateDebug(
+    params: unknown,
+    envelope: unknown,
+    update: unknown,
+  ): void {
+    const safeEnvelope = isObject(envelope)
+      ? (envelope as AcpNotificationEnvelopeLike)
+      : {};
+    const sessionId =
+      typeof safeEnvelope.sessionId === "string"
+        ? safeEnvelope.sessionId
+        : "unknown";
+    this.log(
+      `[ACP] session/update (sessionId=${sessionId}) ${this.summarizeSessionUpdate(update)}`,
+    );
+    if (this.getConfig<boolean>("debugSessionUpdateOnly", false)) {
       return;
     }
     this.log(`[ACP] session/update raw params=${this.stringifyForLog(params)}`);
     if (update !== params) {
-      this.log(`[ACP] session/update extracted update=${this.stringifyForLog(update)}`);
+      this.log(
+        `[ACP] session/update extracted update=${this.stringifyForLog(update)}`,
+      );
     }
   }
 
@@ -54,25 +64,30 @@ export class AcpDebugLogger {
     }
 
     const summaryParts: string[] = [];
-    const sessionUpdate = typeof update.sessionUpdate === 'string' ? update.sessionUpdate : 'unknown';
+    const sessionUpdate =
+      typeof update.sessionUpdate === "string"
+        ? update.sessionUpdate
+        : "unknown";
     summaryParts.push(`type=${sessionUpdate}`);
 
-    if (typeof update.status === 'string') {
+    if (typeof update.status === "string") {
       summaryParts.push(`status=${update.status}`);
     }
-    if (typeof update.toolName === 'string') {
+    if (typeof update.toolName === "string") {
       summaryParts.push(`tool=${update.toolName}`);
     }
-    if (typeof update.toolCallId === 'string') {
+    if (typeof update.toolCallId === "string") {
       summaryParts.push(`toolCallId=${update.toolCallId}`);
     }
-    if (typeof update.title === 'string' && update.title.length > 0) {
+    if (typeof update.title === "string" && update.title.length > 0) {
       summaryParts.push(`title=${this.truncateText(update.title, 120)}`);
     }
 
     if (isObject(update.args)) {
       const argKeys = Object.keys(update.args);
-      summaryParts.push(`argsKeys=${argKeys.length > 0 ? argKeys.join(',') : '(empty)'}`);
+      summaryParts.push(
+        `argsKeys=${argKeys.length > 0 ? argKeys.join(",") : "(empty)"}`,
+      );
       const filePath = this.extractDebugFilePath(update.args);
       if (filePath) {
         summaryParts.push(`path=${this.truncateText(filePath, 200)}`);
@@ -81,19 +96,26 @@ export class AcpDebugLogger {
 
     if (Array.isArray(update.locations) && update.locations.length > 0) {
       const first = update.locations[0];
-      if (isObject(first) && typeof first.path === 'string') {
+      if (isObject(first) && typeof first.path === "string") {
         summaryParts.push(`locationPath=${this.truncateText(first.path, 200)}`);
       }
     }
 
-    return summaryParts.join(', ');
+    return summaryParts.join(", ");
   }
 
   private extractDebugFilePath(args: Record<string, unknown>): string | null {
-    const keys = ['file_path', 'path', 'filePath', 'absolute_path', 'file', 'target_file'];
+    const keys = [
+      "file_path",
+      "path",
+      "filePath",
+      "absolute_path",
+      "file",
+      "target_file",
+    ];
     for (const key of keys) {
       const value = args[key];
-      if (typeof value === 'string' && value.length > 0) {
+      if (typeof value === "string" && value.length > 0) {
         return value;
       }
     }

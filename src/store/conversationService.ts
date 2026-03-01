@@ -2,20 +2,28 @@ import {
   AttachedFile,
   Conversation,
   ConversationMode,
+  DEFAULT_CONTEXT_SIZE,
   Message,
   MODEL_CONTEXT_SIZES,
   MODELS,
   ModelType,
   StreamChunk,
-} from '../protocol';
-import { applyChunkToMessage } from './chunkReducer';
-import { updateConversationById as applyConversationUpdate, deriveConversationTitle, createConversationId } from './conversationMutations';
-import { estimateConversationContextUsage, ContextUsage } from './contextUsageEstimator';
+} from "../protocol";
+import { applyChunkToMessage } from "./chunkReducer";
+import {
+  updateConversationById as applyConversationUpdate,
+  deriveConversationTitle,
+  createConversationId,
+} from "./conversationMutations";
+import {
+  estimateConversationContextUsage,
+  ContextUsage,
+} from "./contextUsageEstimator";
 import {
   AppendAssistantOptions,
   PersistedConversationState,
   UsageChunk,
-} from './storeTypes';
+} from "./storeTypes";
 
 interface ConversationServiceDependencies {
   onPersist: () => void;
@@ -26,6 +34,10 @@ export class ConversationService {
   private state: PersistedConversationState;
   private batchDepth = 0;
   private readonly acpUsedTokensByConversationId = new Map<string, number>();
+  private currentConvCache: {
+    stateRef: PersistedConversationState;
+    result: Conversation | null;
+  } | null = null;
 
   constructor(
     initialState: PersistedConversationState,
@@ -39,10 +51,22 @@ export class ConversationService {
   }
 
   getCurrentConversation(): Conversation | null {
+    if (
+      this.currentConvCache &&
+      this.currentConvCache.stateRef === this.state
+    ) {
+      return this.currentConvCache.result;
+    }
     if (!this.state.currentConversationId) {
+      this.currentConvCache = { stateRef: this.state, result: null };
       return null;
     }
-    return this.state.conversations.find((c) => c.id === this.state.currentConversationId) || null;
+    const result =
+      this.state.conversations.find(
+        (c) => c.id === this.state.currentConversationId,
+      ) || null;
+    this.currentConvCache = { stateRef: this.state, result };
+    return result;
   }
 
   setConversationWorkspaceFolder(uri: string): void {
@@ -52,8 +76,7 @@ export class ConversationService {
       updatedAt: Date.now(),
     }));
     if (updated) {
-      this.persist();
-      this.notifyChange();
+      this.persistAndNotify();
     }
   }
 
@@ -61,9 +84,9 @@ export class ConversationService {
     const current = this.getCurrentConversation();
     const conversation: Conversation = {
       id: createConversationId(),
-      title: 'New Conversation',
+      title: "New Conversation",
       messages: [],
-      mode: 'default',
+      mode: "default",
       think: current?.think ?? false,
       model: current?.model ?? MODELS[0],
       createdAt: Date.now(),
@@ -76,41 +99,45 @@ export class ConversationService {
       conversations: [conversation, ...this.state.conversations],
       currentConversationId: conversation.id,
     };
-    this.persist();
-    this.notifyChange();
+    this.persistAndNotify();
     return conversation;
   }
 
   switchConversation(conversationId: string): void {
-    const conversation = this.state.conversations.find((c) => c.id === conversationId);
+    const conversation = this.state.conversations.find(
+      (c) => c.id === conversationId,
+    );
     if (!conversation) {
       return;
     }
 
     this.state = { ...this.state, currentConversationId: conversationId };
-    this.persist();
-    this.notifyChange();
+    this.persistAndNotify();
   }
 
   deleteConversation(conversationId: string): void {
-    const index = this.state.conversations.findIndex((c) => c.id === conversationId);
+    const index = this.state.conversations.findIndex(
+      (c) => c.id === conversationId,
+    );
     if (index === -1) {
       return;
     }
     this.acpUsedTokensByConversationId.delete(conversationId);
 
-    const conversations = this.state.conversations.filter((c) => c.id !== conversationId);
-    const currentConversationId = this.state.currentConversationId === conversationId
-      ? (conversations[0]?.id || null)
-      : this.state.currentConversationId;
+    const conversations = this.state.conversations.filter(
+      (c) => c.id !== conversationId,
+    );
+    const currentConversationId =
+      this.state.currentConversationId === conversationId
+        ? conversations[0]?.id || null
+        : this.state.currentConversationId;
 
     this.state = {
       ...this.state,
       conversations,
       currentConversationId,
     };
-    this.persist();
-    this.notifyChange();
+    this.persistAndNotify();
   }
 
   clearCurrentConversation(): void {
@@ -122,19 +149,19 @@ export class ConversationService {
     const updated = this.updateCurrentConversation((conversation) => ({
       ...conversation,
       messages: [],
-      title: 'New Conversation',
+      title: "New Conversation",
       sessionId: undefined,
       updatedAt: Date.now(),
     }));
 
     if (updated) {
-      this.persist();
-      this.notifyChange();
+      this.persistAndNotify();
     }
   }
 
   setMode(mode: ConversationMode): void {
-    const conversation = this.getCurrentConversation() ?? this.newConversation();
+    const conversation =
+      this.getCurrentConversation() ?? this.newConversation();
     const updated = this.updateConversationById(conversation.id, (current) => ({
       ...current,
       mode,
@@ -142,13 +169,13 @@ export class ConversationService {
     }));
 
     if (updated) {
-      this.persist();
-      this.notifyChange();
+      this.persistAndNotify();
     }
   }
 
   setThink(enabled: boolean): void {
-    const conversation = this.getCurrentConversation() ?? this.newConversation();
+    const conversation =
+      this.getCurrentConversation() ?? this.newConversation();
     const updated = this.updateConversationById(conversation.id, (current) => ({
       ...current,
       think: enabled,
@@ -156,13 +183,13 @@ export class ConversationService {
     }));
 
     if (updated) {
-      this.persist();
-      this.notifyChange();
+      this.persistAndNotify();
     }
   }
 
   setModel(model: ModelType): void {
-    const conversation = this.getCurrentConversation() ?? this.newConversation();
+    const conversation =
+      this.getCurrentConversation() ?? this.newConversation();
     const updated = this.updateConversationById(conversation.id, (current) => ({
       ...current,
       model,
@@ -170,8 +197,7 @@ export class ConversationService {
     }));
 
     if (updated) {
-      this.persist();
-      this.notifyChange();
+      this.persistAndNotify();
     }
   }
 
@@ -182,8 +208,7 @@ export class ConversationService {
     }));
 
     if (updated) {
-      this.persist();
-      this.notifyChange();
+      this.persistAndNotify();
     }
   }
 
@@ -195,8 +220,7 @@ export class ConversationService {
     }));
 
     if (updated) {
-      this.persist();
-      this.notifyChange();
+      this.persistAndNotify();
     }
   }
 
@@ -208,15 +232,17 @@ export class ConversationService {
 
     const message: Message = {
       id: createConversationId(),
-      role: 'user',
+      role: "user",
       content,
-      blocks: [{ type: 'text', content }],
+      blocks: [{ type: "text", content }],
       attachedFiles,
       timestamp: Date.now(),
     };
 
-    const userCount = conversation.messages.filter((m) => m.role === 'user').length + 1;
-    const nextTitle = userCount === 1 ? deriveConversationTitle(content) : conversation.title;
+    const userCount =
+      conversation.messages.filter((m) => m.role === "user").length + 1;
+    const nextTitle =
+      userCount === 1 ? deriveConversationTitle(content) : conversation.title;
 
     const updated = this.updateConversationById(conversation.id, (current) => ({
       ...current,
@@ -226,8 +252,7 @@ export class ConversationService {
     }));
 
     if (updated) {
-      this.persist();
-      this.notifyChange();
+      this.persistAndNotify();
     }
 
     return message;
@@ -236,13 +261,13 @@ export class ConversationService {
   startAssistantMessage(): Message {
     const conversation = this.getCurrentConversation();
     if (!conversation) {
-      throw new Error('No current conversation');
+      throw new Error("No current conversation");
     }
 
     const message: Message = {
       id: createConversationId(),
-      role: 'assistant',
-      content: '',
+      role: "assistant",
+      content: "",
       blocks: [],
       attachedFiles: [],
       timestamp: Date.now(),
@@ -262,14 +287,17 @@ export class ConversationService {
     return message;
   }
 
-  appendToAssistantMessage(chunk: StreamChunk, options: AppendAssistantOptions = {}): void {
+  appendToAssistantMessage(
+    chunk: StreamChunk,
+    options: AppendAssistantOptions = {},
+  ): void {
     const shouldNotify = options.notify ?? true;
     const conversation = this.getCurrentConversation();
     if (!conversation) {
       return;
     }
 
-    if (chunk.chunkType === 'usage') {
+    if (chunk.chunkType === "usage") {
       if (this.updateAcpUsage(conversation, chunk)) {
         if (shouldNotify) {
           this.notifyChange();
@@ -280,7 +308,7 @@ export class ConversationService {
 
     const lastIndex = conversation.messages.length - 1;
     const lastMessage = conversation.messages[lastIndex];
-    if (!lastMessage || lastMessage.role !== 'assistant') {
+    if (!lastMessage || lastMessage.role !== "assistant") {
       return;
     }
 
@@ -312,15 +340,13 @@ export class ConversationService {
 
     const lastIndex = conversation.messages.length - 1;
     const lastMessage = conversation.messages[lastIndex];
-    if (!lastMessage || lastMessage.role !== 'assistant') {
+    if (!lastMessage || lastMessage.role !== "assistant") {
       return;
     }
 
-    const collapsedBlocks = lastMessage.blocks.map((block) => (
-      block.type === 'thinking'
-        ? { ...block, collapsed: true }
-        : block
-    ));
+    const collapsedBlocks = lastMessage.blocks.map((block) =>
+      block.type === "thinking" ? { ...block, collapsed: true } : block,
+    );
 
     const finishedMessage: Message = {
       ...lastMessage,
@@ -339,8 +365,7 @@ export class ConversationService {
     });
 
     if (updated) {
-      this.persist();
-      this.notifyChange();
+      this.persistAndNotify();
     }
   }
 
@@ -358,16 +383,22 @@ export class ConversationService {
 
   resolveContextUsage(conversation: Conversation | null): ContextUsage {
     if (!conversation) {
-      return { usedTokens: 0, totalTokens: 128000, percent: 0 };
+      return { usedTokens: 0, totalTokens: DEFAULT_CONTEXT_SIZE, percent: 0 };
     }
 
-    const acpUsedTokens = this.acpUsedTokensByConversationId.get(conversation.id);
+    const acpUsedTokens = this.acpUsedTokensByConversationId.get(
+      conversation.id,
+    );
     if (acpUsedTokens === undefined) {
       return estimateConversationContextUsage(conversation);
     }
 
-    const totalTokens = MODEL_CONTEXT_SIZES[conversation.model] || 128000;
-    const percent = totalTokens > 0 ? Math.min(100, Math.round((acpUsedTokens / totalTokens) * 100)) : 0;
+    const totalTokens =
+      MODEL_CONTEXT_SIZES[conversation.model] || DEFAULT_CONTEXT_SIZE;
+    const percent =
+      totalTokens > 0
+        ? Math.min(100, Math.round((acpUsedTokens / totalTokens) * 100))
+        : 0;
     return {
       usedTokens: acpUsedTokens,
       totalTokens,
@@ -385,18 +416,32 @@ export class ConversationService {
     }
   }
 
-  private updateCurrentConversation(updater: (conversation: Conversation) => Conversation): Conversation | null {
+  private persistAndNotify(): void {
+    this.persist();
+    this.notifyChange();
+  }
+
+  private updateCurrentConversation(
+    updater: (conversation: Conversation) => Conversation,
+  ): Conversation | null {
     if (!this.state.currentConversationId) {
       return null;
     }
-    return this.updateConversationById(this.state.currentConversationId, updater);
+    return this.updateConversationById(
+      this.state.currentConversationId,
+      updater,
+    );
   }
 
   private updateConversationById(
     conversationId: string,
     updater: (conversation: Conversation) => Conversation,
   ): Conversation | null {
-    const { nextState, updatedConversation } = applyConversationUpdate(this.state, conversationId, updater);
+    const { nextState, updatedConversation } = applyConversationUpdate(
+      this.state,
+      conversationId,
+      updater,
+    );
     this.state = nextState;
     return updatedConversation;
   }
@@ -405,7 +450,8 @@ export class ConversationService {
     conversation: Conversation,
     chunk: UsageChunk,
   ): boolean {
-    const usedTokens = chunk.promptTokens ?? chunk.totalTokens ?? chunk.completionTokens;
+    const usedTokens =
+      chunk.promptTokens ?? chunk.totalTokens ?? chunk.completionTokens;
     if (usedTokens === undefined) {
       return false;
     }

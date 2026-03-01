@@ -1,7 +1,7 @@
-import type { AttachedFile, WebviewMessage } from '../src/protocol';
-import { escapeHtml } from './markdownRenderer';
-import { getFileName, getFileIcon } from './fileUtils';
-import { escapeAttr } from './webviewUtils';
+import type { AttachedFile, WebviewMessage } from "../src/protocol";
+import { escapeHtml } from "./markdownRenderer";
+import { getFileName, getFileIcon } from "./fileUtils";
+import { escapeAttr } from "./webviewUtils";
 
 interface InputHost {
   postMessage(msg: WebviewMessage): void;
@@ -12,19 +12,27 @@ interface InputHost {
 export class InputController {
   private attachedFiles: AttachedFile[] = [];
   private showMentionMenu = false;
-  private mentionFilter = '';
+  private mentionFilter = "";
   private workspaceFiles: { path: string; name: string }[] = [];
 
   constructor(private host: InputHost) {}
 
   // ── Getters ──────────────────────────────────────────────────────
 
-  get isMentionVisible(): boolean { return this.showMentionMenu; }
+  get isMentionVisible(): boolean {
+    return this.showMentionMenu;
+  }
 
-  getAttachedFiles(): AttachedFile[] { return this.attachedFiles; }
+  getAttachedFiles(): AttachedFile[] {
+    return this.attachedFiles;
+  }
 
   hasLoadingFiles(): boolean {
-    return this.attachedFiles.some(f => f.content === undefined);
+    return this.attachedFiles.some((f) => f.content === undefined);
+  }
+
+  private get attachedFilePaths(): Set<string> {
+    return new Set(this.attachedFiles.map((f) => f.path));
   }
 
   // ── File handling ────────────────────────────────────────────────
@@ -40,8 +48,8 @@ export class InputController {
     }
 
     this.host.postMessage({
-      type: 'readFiles',
-      paths: files.map(f => f.path)
+      type: "readFiles",
+      paths: files.map((f) => f.path),
     });
     this.renderAttachedFiles();
   }
@@ -84,7 +92,10 @@ export class InputController {
     if (atMatch) {
       this.showMentionMenu = true;
       this.mentionFilter = atMatch[1];
-      this.host.postMessage({ type: 'listWorkspaceFiles', query: this.mentionFilter });
+      this.host.postMessage({
+        type: "listWorkspaceFiles",
+        query: this.mentionFilter,
+      });
       return true;
     }
     this.showMentionMenu = false;
@@ -93,14 +104,18 @@ export class InputController {
 
   /** Handle Enter key — insert mention if menu is visible. Returns true if handled. */
   handleEnterKey(): boolean {
-    if (!this.showMentionMenu) { return false; }
+    if (!this.showMentionMenu) {
+      return false;
+    }
     this.insertMention();
     return true;
   }
 
   /** Handle Escape key — close mention menu if visible. Returns true if handled. */
   handleEscapeKey(): boolean {
-    if (!this.showMentionMenu) { return false; }
+    if (!this.showMentionMenu) {
+      return false;
+    }
     this.showMentionMenu = false;
     return true;
   }
@@ -108,8 +123,12 @@ export class InputController {
   // ── Send support ─────────────────────────────────────────────────
 
   canSend(content: string): boolean {
-    if (!content && this.attachedFiles.length === 0) { return false; }
-    if (this.attachedFiles.length > 0 && this.hasLoadingFiles()) { return false; }
+    if (!content && this.attachedFiles.length === 0) {
+      return false;
+    }
+    if (this.attachedFiles.length > 0 && this.hasLoadingFiles()) {
+      return false;
+    }
     return true;
   }
 
@@ -124,52 +143,64 @@ export class InputController {
   // ── Rendering ────────────────────────────────────────────────────
 
   renderAttachedFilesHtml(): string {
-    if (this.attachedFiles.length === 0) { return ''; }
+    if (this.attachedFiles.length === 0) {
+      return "";
+    }
 
     return `
       <div class="attached-files" id="attached-files">
-        ${this.attachedFiles.map((f, i) => `
-          <div class="file-chip ${f.content === undefined ? 'loading' : ''}">
+        ${this.attachedFiles
+          .map(
+            (f, i) => `
+          <div class="file-chip ${f.content === undefined ? "loading" : ""}">
             <button class="file-open-btn" data-open-file-path="${escapeAttr(f.path)}" title="Open ${escapeAttr(getFileName(f.path))}">
               <span class="file-icon">${getFileIcon(f.path)}</span>
               <span class="file-name">${escapeHtml(getFileName(f.path))}</span>
             </button>
-            ${f.content === undefined ? '<span class="file-loading-indicator">⏳</span>' : ''}
+            ${f.content === undefined ? '<span class="file-loading-indicator">⏳</span>' : ""}
             <button class="remove-file" data-index="${i}">×</button>
           </div>
-        `).join('')}
+        `,
+          )
+          .join("")}
       </div>
     `;
   }
 
   renderMentionMenuHtml(): string {
-    const filtered = this.workspaceFiles.filter(f =>
-      f.name.toLowerCase().includes(this.mentionFilter.toLowerCase()) ||
-      f.path.toLowerCase().includes(this.mentionFilter.toLowerCase())
+    const filtered = this.workspaceFiles.filter(
+      (f) =>
+        f.name.toLowerCase().includes(this.mentionFilter.toLowerCase()) ||
+        f.path.toLowerCase().includes(this.mentionFilter.toLowerCase()),
     );
 
     return `
       <div class="mention-menu" id="mention-menu">
-        ${filtered.length === 0 ? '<div class="no-results">No files found</div>' : ''}
-        ${filtered.slice(0, 10).map(f => `
+        ${filtered.length === 0 ? '<div class="no-results">No files found</div>' : ""}
+        ${filtered
+          .slice(0, 10)
+          .map(
+            (f) => `
           <div class="mention-item" data-path="${escapeAttr(f.path)}">
             <span class="file-name">${escapeHtml(f.name)}</span>
             <span class="file-path">${escapeHtml(f.path)}</span>
           </div>
-        `).join('')}
+        `,
+          )
+          .join("")}
       </div>
     `;
   }
 
   renderAttachedFiles(): void {
-    const container = document.getElementById('attached-files');
+    const container = document.getElementById("attached-files");
     if (container) {
       container.outerHTML = this.renderAttachedFilesHtml();
       this.attachFileRemoveListeners();
     } else {
-      const composer = document.querySelector('.composer');
+      const composer = document.querySelector(".composer");
       if (composer && this.attachedFiles.length > 0) {
-        const div = document.createElement('div');
+        const div = document.createElement("div");
         div.innerHTML = this.renderAttachedFilesHtml();
         composer.insertBefore(div.firstElementChild!, composer.firstChild);
         this.attachFileRemoveListeners();
@@ -179,7 +210,7 @@ export class InputController {
   }
 
   updateMentionMenu(): void {
-    const existing = document.getElementById('mention-menu');
+    const existing = document.getElementById("mention-menu");
     if (existing) {
       existing.outerHTML = this.renderMentionMenuHtml();
       this.attachMentionListeners();
@@ -189,8 +220,8 @@ export class InputController {
   // ── Listeners ────────────────────────────────────────────────────
 
   attachMentionListeners(): void {
-    document.querySelectorAll('.mention-item').forEach(item => {
-      item.addEventListener('click', () => {
+    document.querySelectorAll(".mention-item").forEach((item) => {
+      item.addEventListener("click", () => {
         const path = (item as HTMLElement).dataset.path;
         if (path) {
           this.addFileFromMention(path);
@@ -200,10 +231,12 @@ export class InputController {
   }
 
   attachFileRemoveListeners(): void {
-    document.querySelectorAll('.remove-file').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const index = parseInt((btn as HTMLElement).dataset.index || '0', 10);
-        this.attachedFiles = this.attachedFiles.filter((_file, i) => i !== index);
+    document.querySelectorAll(".remove-file").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const index = parseInt((btn as HTMLElement).dataset.index || "0", 10);
+        this.attachedFiles = this.attachedFiles.filter(
+          (_file, i) => i !== index,
+        );
         this.renderAttachedFiles();
       });
     });
@@ -217,7 +250,7 @@ export class InputController {
   // ── Private ──────────────────────────────────────────────────────
 
   private insertMention(): void {
-    const firstItem = document.querySelector('.mention-item') as HTMLElement;
+    const firstItem = document.querySelector(".mention-item") as HTMLElement;
     if (firstItem?.dataset.path) {
       this.addFileFromMention(firstItem.dataset.path);
     }
@@ -225,19 +258,21 @@ export class InputController {
 
   private addFileFromMention(filePath: string): void {
     const input = this.host.getInputElement();
-    if (!input) { return; }
+    if (!input) {
+      return;
+    }
 
     // Remove the @query from input
     const value = input.value;
     const cursorPos = input.selectionStart;
     const textBeforeCursor = value.substring(0, cursorPos);
-    const newTextBefore = textBeforeCursor.replace(/@\S*$/, '');
+    const newTextBefore = textBeforeCursor.replace(/@\S*$/, "");
     input.value = newTextBefore + value.substring(cursorPos);
 
     // Add file to attachments
-    if (!this.attachedFiles.find(f => f.path === filePath)) {
+    if (!this.attachedFilePaths.has(filePath)) {
       this.attachedFiles = [...this.attachedFiles, { path: filePath }];
-      this.host.postMessage({ type: 'readFiles', paths: [filePath] });
+      this.host.postMessage({ type: "readFiles", paths: [filePath] });
     }
 
     this.showMentionMenu = false;

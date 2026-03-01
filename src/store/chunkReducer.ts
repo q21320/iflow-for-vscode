@@ -1,6 +1,9 @@
-import { Message, OutputBlock, StreamChunk } from '../protocol';
+import { Message, OutputBlock, StreamChunk } from "../protocol";
 
-function findLastBlockIndex(blocks: OutputBlock[], type: OutputBlock['type']): number {
+function findLastBlockIndex(
+  blocks: OutputBlock[],
+  type: OutputBlock["type"],
+): number {
   const idx = blocks.length - 1;
   if (idx < 0) {
     return -1;
@@ -10,31 +13,37 @@ function findLastBlockIndex(blocks: OutputBlock[], type: OutputBlock['type']): n
 
 function findLatestToolBlockIndex(blocks: OutputBlock[]): number {
   for (let i = blocks.length - 1; i >= 0; i -= 1) {
-    if (blocks[i].type === 'tool') {
+    if (blocks[i].type === "tool") {
       return i;
     }
   }
   return -1;
 }
 
-function findToolBlockIndexByCallId(blocks: OutputBlock[], toolCallId: string): number {
+function findToolBlockIndexByCallId(
+  blocks: OutputBlock[],
+  toolCallId: string,
+): number {
   for (let i = blocks.length - 1; i >= 0; i -= 1) {
     const block = blocks[i];
-    if (block.type === 'tool' && block.toolCallId === toolCallId) {
+    if (block.type === "tool" && block.toolCallId === toolCallId) {
       return i;
     }
   }
   return -1;
 }
 
-function findLatestRunningAnonymousToolIndexByName(blocks: OutputBlock[], toolName: string): number {
+function findLatestRunningAnonymousToolIndexByName(
+  blocks: OutputBlock[],
+  toolName: string,
+): number {
   for (let i = blocks.length - 1; i >= 0; i -= 1) {
     const block = blocks[i];
     if (
-      block.type === 'tool'
-      && block.status === 'running'
-      && block.name === toolName
-      && !block.toolCallId
+      block.type === "tool" &&
+      block.status === "running" &&
+      block.name === toolName &&
+      !block.toolCallId
     ) {
       return i;
     }
@@ -42,20 +51,30 @@ function findLatestRunningAnonymousToolIndexByName(blocks: OutputBlock[], toolNa
   return -1;
 }
 
-export function applyChunkToMessage(message: Message, chunk: StreamChunk): Message {
-  const blocks = [...message.blocks];
+function copyBlocks(message: Message): OutputBlock[] {
+  return [...message.blocks];
+}
 
+export function applyChunkToMessage(
+  message: Message,
+  chunk: StreamChunk,
+): Message {
   switch (chunk.chunkType) {
-    case 'usage':
+    case "usage":
+    case "code_end":
+    case "tool_confirmation":
+    case "user_question":
+    case "plan_approval":
       return message;
 
-    case 'text': {
-      const idx = findLastBlockIndex(blocks, 'text');
+    case "text": {
+      const blocks = copyBlocks(message);
+      const idx = findLastBlockIndex(blocks, "text");
       if (idx !== -1) {
-        const current = blocks[idx] as Extract<OutputBlock, { type: 'text' }>;
+        const current = blocks[idx] as Extract<OutputBlock, { type: "text" }>;
         blocks[idx] = { ...current, content: current.content + chunk.content };
       } else {
-        blocks.push({ type: 'text', content: chunk.content });
+        blocks.push({ type: "text", content: chunk.content });
       }
       return {
         ...message,
@@ -64,29 +83,30 @@ export function applyChunkToMessage(message: Message, chunk: StreamChunk): Messa
       };
     }
 
-    case 'code_start':
+    case "code_start": {
+      const blocks = copyBlocks(message);
       blocks.push({
-        type: 'code',
+        type: "code",
         language: chunk.language,
         filename: chunk.filename,
-        content: '',
+        content: "",
       });
       return { ...message, blocks };
+    }
 
-    case 'code_content': {
-      const idx = findLastBlockIndex(blocks, 'code');
+    case "code_content": {
+      const blocks = copyBlocks(message);
+      const idx = findLastBlockIndex(blocks, "code");
       if (idx === -1) {
         return message;
       }
-      const current = blocks[idx] as Extract<OutputBlock, { type: 'code' }>;
+      const current = blocks[idx] as Extract<OutputBlock, { type: "code" }>;
       blocks[idx] = { ...current, content: current.content + chunk.content };
       return { ...message, blocks };
     }
 
-    case 'code_end':
-      return message;
-
-    case 'tool_start': {
+    case "tool_start": {
+      const blocks = copyBlocks(message);
       let idx = chunk.toolCallId
         ? findToolBlockIndexByCallId(blocks, chunk.toolCallId)
         : findLatestToolBlockIndex(blocks);
@@ -99,13 +119,22 @@ export function applyChunkToMessage(message: Message, chunk: StreamChunk): Messa
       }
 
       if (idx !== -1) {
-        const targetTool = blocks[idx] as Extract<OutputBlock, { type: 'tool' }>;
-        if (chunk.toolCallId || (targetTool.status === 'running' && targetTool.name === chunk.name && !targetTool.toolCallId)) {
+        const targetTool = blocks[idx] as Extract<
+          OutputBlock,
+          { type: "tool" }
+        >;
+        if (
+          chunk.toolCallId ||
+          (targetTool.status === "running" &&
+            targetTool.name === chunk.name &&
+            !targetTool.toolCallId)
+        ) {
           blocks[idx] = {
             ...targetTool,
-            input: chunk.input && Object.keys(chunk.input).length > 0
-              ? { ...targetTool.input, ...chunk.input }
-              : targetTool.input,
+            input:
+              chunk.input && Object.keys(chunk.input).length > 0
+                ? { ...targetTool.input, ...chunk.input }
+                : targetTool.input,
             label: chunk.label ?? targetTool.label,
             toolCallId: chunk.toolCallId ?? targetTool.toolCallId,
           };
@@ -114,25 +143,26 @@ export function applyChunkToMessage(message: Message, chunk: StreamChunk): Messa
       }
 
       blocks.push({
-        type: 'tool',
+        type: "tool",
         name: chunk.name,
         input: chunk.input,
-        output: '',
-        status: 'running',
+        output: "",
+        status: "running",
         label: chunk.label,
         toolCallId: chunk.toolCallId,
       });
       return { ...message, blocks };
     }
 
-    case 'tool_output': {
+    case "tool_output": {
+      const blocks = copyBlocks(message);
       const idx = chunk.toolCallId
         ? findToolBlockIndexByCallId(blocks, chunk.toolCallId)
         : findLatestToolBlockIndex(blocks);
       if (idx === -1) {
         return message;
       }
-      const current = blocks[idx] as Extract<OutputBlock, { type: 'tool' }>;
+      const current = blocks[idx] as Extract<OutputBlock, { type: "tool" }>;
       blocks[idx] = {
         ...current,
         output: current.output + chunk.content,
@@ -141,14 +171,15 @@ export function applyChunkToMessage(message: Message, chunk: StreamChunk): Messa
       return { ...message, blocks };
     }
 
-    case 'tool_end': {
+    case "tool_end": {
+      const blocks = copyBlocks(message);
       const idx = chunk.toolCallId
         ? findToolBlockIndexByCallId(blocks, chunk.toolCallId)
         : findLatestToolBlockIndex(blocks);
       if (idx === -1) {
         return message;
       }
-      const current = blocks[idx] as Extract<OutputBlock, { type: 'tool' }>;
+      const current = blocks[idx] as Extract<OutputBlock, { type: "tool" }>;
       blocks[idx] = {
         ...current,
         status: chunk.status,
@@ -157,51 +188,53 @@ export function applyChunkToMessage(message: Message, chunk: StreamChunk): Messa
       return { ...message, blocks };
     }
 
-    case 'thinking_start':
+    case "thinking_start": {
+      const blocks = copyBlocks(message);
       blocks.push({
-        type: 'thinking',
-        content: '',
+        type: "thinking",
+        content: "",
         collapsed: false,
       });
       return { ...message, blocks };
+    }
 
-    case 'thinking_content': {
-      const idx = findLastBlockIndex(blocks, 'thinking');
+    case "thinking_content": {
+      const blocks = copyBlocks(message);
+      const idx = findLastBlockIndex(blocks, "thinking");
       if (idx === -1) {
         return message;
       }
-      const current = blocks[idx] as Extract<OutputBlock, { type: 'thinking' }>;
+      const current = blocks[idx] as Extract<OutputBlock, { type: "thinking" }>;
       blocks[idx] = { ...current, content: current.content + chunk.content };
       return { ...message, blocks };
     }
 
-    case 'thinking_end': {
-      const idx = findLastBlockIndex(blocks, 'thinking');
+    case "thinking_end": {
+      const blocks = copyBlocks(message);
+      const idx = findLastBlockIndex(blocks, "thinking");
       if (idx === -1) {
         return message;
       }
-      const current = blocks[idx] as Extract<OutputBlock, { type: 'thinking' }>;
+      const current = blocks[idx] as Extract<OutputBlock, { type: "thinking" }>;
       blocks[idx] = { ...current, collapsed: true };
       return { ...message, blocks };
     }
 
-    case 'file_ref':
+    case "file_ref": {
+      const blocks = copyBlocks(message);
       blocks.push({
-        type: 'file_ref',
+        type: "file_ref",
         path: chunk.path,
         lineStart: chunk.lineStart,
         lineEnd: chunk.lineEnd,
       });
       return { ...message, blocks };
+    }
 
-    case 'tool_confirmation':
-    case 'user_question':
-    case 'plan_approval':
-      return message;
-
-    case 'plan': {
-      const planBlock: OutputBlock = { type: 'plan', entries: chunk.entries };
-      const idx = blocks.findIndex((b) => b.type === 'plan');
+    case "plan": {
+      const blocks = copyBlocks(message);
+      const planBlock: OutputBlock = { type: "plan", entries: chunk.entries };
+      const idx = blocks.findIndex((b) => b.type === "plan");
       if (idx !== -1) {
         blocks[idx] = planBlock;
       } else {
@@ -210,15 +243,18 @@ export function applyChunkToMessage(message: Message, chunk: StreamChunk): Messa
       return { ...message, blocks };
     }
 
-    case 'error': {
-      const errorMessage = chunk.message.trim() || 'Unknown error';
-      blocks.push({ type: 'error', message: errorMessage });
+    case "error": {
+      const blocks = copyBlocks(message);
+      const errorMessage = chunk.message.trim() || "Unknown error";
+      blocks.push({ type: "error", message: errorMessage });
       return { ...message, blocks };
     }
 
-    case 'warning':
-      blocks.push({ type: 'warning', message: chunk.message });
+    case "warning": {
+      const blocks = copyBlocks(message);
+      blocks.push({ type: "warning", message: chunk.message });
       return { ...message, blocks };
+    }
   }
 
   return message;

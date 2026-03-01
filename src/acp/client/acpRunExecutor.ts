@@ -1,18 +1,18 @@
-import { ChunkMapper } from '../../chunkMapper';
-import { toAppError } from '../../errorUtils';
-import { StreamChunk } from '../../protocol';
-import { InactivityGuard } from '../inactivityGuard';
-import { PathPolicy } from '../pathPolicy';
-import { SessionCoordinator } from '../sessionCoordinator';
-import { RunOptions } from '../types';
-import { AcpProtocol } from '../../acpProtocol';
-import { AcpNotificationRouter } from './acpNotificationRouter';
-import { AcpUsageExtractor } from './acpUsageExtractor';
-import { isObject } from '../../shared/typeGuards';
+import { ChunkMapper } from "../../chunkMapper";
+import { toAppError } from "../../errorUtils";
+import { StreamChunk } from "../../protocol";
+import { InactivityGuard } from "../inactivityGuard";
+import { PathPolicy } from "../pathPolicy";
+import { SessionCoordinator } from "../sessionCoordinator";
+import { RunOptions } from "../types";
+import { AcpProtocol } from "../../acpProtocol";
+import { AcpNotificationRouter } from "./acpNotificationRouter";
+import { AcpUsageExtractor } from "./acpUsageExtractor";
+import { isObject } from "../../shared/typeGuards";
 import {
   DEFAULT_SUBAGENT_INACTIVITY_TIMEOUT_MS,
   SUBAGENT_CANCEL_RECOVERY_TIMEOUT_MS,
-} from '../../constants/runtime';
+} from "../../constants/runtime";
 
 interface RunExecutorDeps {
   chunkMapper: ChunkMapper;
@@ -22,14 +22,16 @@ interface RunExecutorDeps {
   usageExtractor: AcpUsageExtractor;
   getConfig: <T>(key: string, defaultValue: T) => T;
   log: (message: string) => void;
-  updateIFlowCliModel: (model: RunOptions['model']) => void;
+  updateIFlowCliModel: (model: RunOptions["model"]) => void;
   updateIFlowCliApiConfig: (baseUrl: string | undefined) => void;
   isRunning: () => boolean;
   setRunning: (running: boolean) => void;
   setActiveChunkSink: (sink: ((chunk: StreamChunk) => void) | null) => void;
   cancel: () => Promise<void>;
   isMissingSessionError: (error: unknown) => boolean;
-  recoverMissingSession: (options: RunOptions) => Promise<{ protocol: AcpProtocol; sessionId: string }>;
+  recoverMissingSession: (
+    options: RunOptions,
+  ) => Promise<{ protocol: AcpProtocol; sessionId: string }>;
   createInactivityGuard?: (
     timeoutMs: number,
     onTimeout: () => void,
@@ -43,10 +45,33 @@ interface RunCallbacks {
   onError: (error: string) => void;
 }
 
+interface PromptExecutionContext {
+  protocol: AcpProtocol;
+  sessionId: string;
+  builtPrompt: string;
+  inactivityGuard: InactivityGuard;
+  inactivityTimeoutMs: number;
+  debugLogging: boolean;
+  onChunk: (chunk: StreamChunk) => void;
+  registerNotificationHandler: (targetProtocol: AcpProtocol) => void;
+  resolveInactivitySignal: (() => void) | null;
+  waitForInactivity: Promise<void>;
+}
+
+interface PromptExecutionResult {
+  promptResult: unknown;
+  needsRecovery: boolean;
+  protocol: AcpProtocol;
+  sessionId: string;
+}
+
 export class AcpRunExecutor {
   constructor(private readonly deps: RunExecutorDeps) {}
 
-  async run(options: RunOptions, callbacks: RunCallbacks): Promise<string | undefined> {
+  async run(
+    options: RunOptions,
+    callbacks: RunCallbacks,
+  ): Promise<string | undefined> {
     const { onChunk, onEnd, onError } = callbacks;
 
     try {
@@ -54,49 +79,33 @@ export class AcpRunExecutor {
       this.deps.setActiveChunkSink(onChunk);
       this.deps.chunkMapper.reset();
 
-      // Settings file I/O (overridable in tests)
       this.deps.updateIFlowCliModel(options.model);
       this.deps.updateIFlowCliApiConfig(undefined);
 
-      // Enforce filesystem path policy for ACP fs/* handlers.
-      const cwd = options.cwd ?? process.cwd();
-      const allowedDirs = options.fileAllowedDirs && options.fileAllowedDirs.length > 0
-        ? options.fileAllowedDirs
-        : [cwd];
-      this.deps.pathPolicy.setBaseDir(cwd);
-      this.deps.pathPolicy.setAllowedDirs(allowedDirs);
+      this.setupPathPolicy(options);
 
-      // Establish or reuse ACP connection/session.
-      try {
-        await this.deps.sessionCoordinator.ensureConnected(options);
-      } catch (connectError) {
-        if (options.sessionId && this.deps.isMissingSessionError(connectError)) {
-          this.deps.log('ACP session missing during connect/load. Falling back to a fresh session.');
-          const recovered = await this.deps.recoverMissingSession(options);
-          options = { ...options, sessionId: recovered.sessionId };
-        } else {
-          throw connectError;
-        }
-      }
+      const resolvedOptions = await this.connectWithRecovery(options);
 
       let protocol = this.deps.sessionCoordinator.currentProtocol;
       let sessionId = this.deps.sessionCoordinator.currentSessionId;
       if (!protocol || !sessionId) {
-        throw new Error('No active ACP protocol/session');
+        throw new Error("No active ACP protocol/session");
       }
       let mappedSessionUpdateChunkCount = 0;
 
-      const debugLogging = this.deps.getConfig<boolean>('debugLogging', false);
+      const debugLogging = this.deps.getConfig<boolean>("debugLogging", false);
       const inactivityTimeoutMs = this.deps.getConfig<number>(
-        'subagentInactivityTimeoutMs',
+        "subagentInactivityTimeoutMs",
         DEFAULT_SUBAGENT_INACTIVITY_TIMEOUT_MS,
       );
       let resolveInactivitySignal: (() => void) | null = null;
-      let waitForInactivity = this.createInactivitySignal((resolve) => {
+      const waitForInactivity = this.createInactivitySignal((resolve) => {
         resolveInactivitySignal = resolve;
       });
-      const createInactivityGuard = this.deps.createInactivityGuard
-        ?? ((timeoutMs, onTimeout, log) => new InactivityGuard(timeoutMs, onTimeout, log));
+      const createInactivityGuard =
+        this.deps.createInactivityGuard ??
+        ((timeoutMs, onTimeout, log) =>
+          new InactivityGuard(timeoutMs, onTimeout, log));
       const inactivityGuard = createInactivityGuard(
         inactivityTimeoutMs,
         () => {
@@ -106,13 +115,17 @@ export class AcpRunExecutor {
           }
           Promise.race([
             this.deps.cancel(),
-            new Promise<void>((resolve) => setTimeout(resolve, SUBAGENT_CANCEL_RECOVERY_TIMEOUT_MS)),
+            new Promise<void>((resolve) =>
+              setTimeout(resolve, SUBAGENT_CANCEL_RECOVERY_TIMEOUT_MS),
+            ),
           ]).catch(() => {});
         },
         (msg) => this.deps.log(msg),
       );
 
-      const registerNotificationHandler = (targetProtocol: AcpProtocol): void => {
+      const registerNotificationHandler = (
+        targetProtocol: AcpProtocol,
+      ): void => {
         this.deps.notificationRouter.registerSessionUpdateHandler(
           targetProtocol,
           (chunk) => {
@@ -128,128 +141,42 @@ export class AcpRunExecutor {
       inactivityGuard.start(() => this.deps.isRunning());
 
       const builtPrompt = this.deps.chunkMapper.buildPrompt({
-        prompt: options.prompt,
-        attachedFiles: options.attachedFiles,
-        workspaceFiles: options.workspaceFiles,
-        ideContext: options.ideContext,
-        cwd: options.cwd,
+        prompt: resolvedOptions.prompt,
+        attachedFiles: resolvedOptions.attachedFiles,
+        workspaceFiles: resolvedOptions.workspaceFiles,
+        ideContext: resolvedOptions.ideContext,
+        cwd: resolvedOptions.cwd,
       });
       this.deps.log(
-        `[ACP] Sending session/prompt: sessionId=${sessionId}, promptLength=${builtPrompt.length}, preview=${this.buildPromptPreview(builtPrompt)}`
+        `[ACP] Sending session/prompt: sessionId=${sessionId}, promptLength=${builtPrompt.length}, preview=${this.buildPromptPreview(builtPrompt)}`,
       );
 
-      // ── Execute prompt with inactivity recovery ──────────────────────
-      let promptResult: unknown;
-      let needsRecovery = false;
-      const runPromptWithInactivityRace = async (
-        targetProtocol: AcpProtocol,
-        targetSessionId: string,
-        promptText: string,
-      ): Promise<unknown> => {
-        const outcome = await this.requestPromptWithInactivityRace(
-          targetProtocol,
-          targetSessionId,
-          promptText,
+      const execResult = await this.executePromptWithGuard(
+        {
+          protocol,
+          sessionId,
+          builtPrompt,
+          inactivityGuard,
+          inactivityTimeoutMs,
+          debugLogging,
+          onChunk,
+          registerNotificationHandler,
+          resolveInactivitySignal,
           waitForInactivity,
-        );
+        },
+        resolvedOptions,
+      );
 
-        if (outcome.kind === 'inactivity') {
-          needsRecovery = true;
-          waitForInactivity = this.createInactivitySignal((resolve) => {
-            resolveInactivitySignal = resolve;
-          });
-          return {};
-        }
-
-        if (outcome.kind === 'error') {
-          throw outcome.error;
-        }
-
-        return outcome.result;
-      };
-
-      try {
-        promptResult = await runPromptWithInactivityRace(protocol, sessionId, builtPrompt);
-      } catch (promptError) {
-        if (this.deps.isMissingSessionError(promptError)) {
-          this.deps.log('ACP session missing during prompt. Recreating session and retrying once.');
-          const recovered = await this.deps.recoverMissingSession(options);
-          protocol = recovered.protocol;
-          sessionId = recovered.sessionId;
-          registerNotificationHandler(protocol);
-
-          promptResult = await runPromptWithInactivityRace(protocol, sessionId, builtPrompt);
-        } else if (inactivityGuard.didTrigger) {
-          needsRecovery = true;
-        } else {
-          throw promptError;
-        }
-      } finally {
-        inactivityGuard.stop();
-      }
-
-      // ── Inactivity recovery: inform main agent ─────────────────────
-      if (needsRecovery && inactivityGuard.lastTool) {
-        const stuckTool = inactivityGuard.lastTool;
-        const toolDesc = stuckTool.title || stuckTool.name;
-        const timeoutMinutes = Math.round(inactivityTimeoutMs / 60000);
-
-        onChunk({
-          chunkType: 'warning',
-          message: `Sub-agent "${toolDesc}" appears stuck (no activity for ${timeoutMinutes} min). Notifying main agent...`,
-        });
-
-        this.deps.chunkMapper.reset();
-        registerNotificationHandler(protocol);
-
-        const recoveryPrompt =
-          `<system-reminder>The sub-agent "${toolDesc}" (tool: ${stuckTool.name}) ` +
-          `was inactive for over ${timeoutMinutes} minutes and has been automatically cancelled. ` +
-          `It may not be available or may have encountered an internal error. ` +
-          `Please try a different approach or continue without this step.</system-reminder>`;
-        try {
-          promptResult = await this.requestPromptWithTimeout(
-            protocol,
-            sessionId,
-            recoveryPrompt,
-            SUBAGENT_CANCEL_RECOVERY_TIMEOUT_MS,
-          );
-        } catch (recoveryError) {
-          const recoveryMessage = toAppError(recoveryError, 'Failed to request post-cancel recovery response').message;
-          this.deps.log(`[ACP] ${recoveryMessage}`);
-          onChunk({
-            chunkType: 'warning',
-            message: `Sub-agent was cancelled, but recovery prompt failed: ${recoveryMessage}`,
-          });
-        }
-      }
-
-      const promptUsage = this.deps.usageExtractor.extractUsageChunk(promptResult);
-      if (promptUsage) {
-        onChunk(promptUsage);
-      }
-      if (mappedSessionUpdateChunkCount === 0) {
-        const fallbackChunks = this.extractPromptResultChunks(promptResult);
-        if (fallbackChunks.length > 0) {
-          this.deps.log(
-            `[ACP] No session/update chunks received; rendering ${fallbackChunks.length} fallback chunk(s) from session/prompt result`
-          );
-          for (const fallbackChunk of fallbackChunks) {
-            onChunk(fallbackChunk);
-          }
-        } else {
-          this.deps.log('[ACP] No session/update chunks received and session/prompt result contained no renderable text');
-        }
-      }
-
-      for (const tailChunk of this.deps.chunkMapper.flushToChunks()) {
-        onChunk(tailChunk);
-      }
+      this.emitFinalChunks(
+        execResult.promptResult,
+        mappedSessionUpdateChunkCount,
+        onChunk,
+      );
 
       onEnd();
       return this.deps.sessionCoordinator.currentSessionId ?? undefined;
     } catch (err: unknown) {
-      const appError = toAppError(err, 'Unknown ACP error');
+      const appError = toAppError(err, "Unknown ACP error");
       onError(appError.message);
       return undefined;
     } finally {
@@ -262,7 +189,207 @@ export class AcpRunExecutor {
     await this.deps.cancel();
   }
 
-  private createInactivitySignal(registerResolve: (resolve: () => void) => void): Promise<void> {
+  private setupPathPolicy(options: RunOptions): void {
+    const cwd = options.cwd ?? process.cwd();
+    const allowedDirs =
+      options.fileAllowedDirs && options.fileAllowedDirs.length > 0
+        ? options.fileAllowedDirs
+        : [cwd];
+    this.deps.pathPolicy.setBaseDir(cwd);
+    this.deps.pathPolicy.setAllowedDirs(allowedDirs);
+  }
+
+  private async connectWithRecovery(options: RunOptions): Promise<RunOptions> {
+    try {
+      await this.deps.sessionCoordinator.ensureConnected(options);
+      return options;
+    } catch (connectError) {
+      if (options.sessionId && this.deps.isMissingSessionError(connectError)) {
+        this.deps.log(
+          "ACP session missing during connect/load. Falling back to a fresh session.",
+        );
+        const recovered = await this.deps.recoverMissingSession(options);
+        return { ...options, sessionId: recovered.sessionId };
+      }
+      throw connectError;
+    }
+  }
+
+  private async executePromptWithGuard(
+    ctx: PromptExecutionContext,
+    options: RunOptions,
+  ): Promise<PromptExecutionResult> {
+    let { protocol, sessionId, resolveInactivitySignal, waitForInactivity } =
+      ctx;
+    const {
+      builtPrompt,
+      inactivityGuard,
+      inactivityTimeoutMs,
+      onChunk,
+      registerNotificationHandler,
+    } = ctx;
+
+    let promptResult: unknown;
+    let needsRecovery = false;
+
+    const runPromptWithInactivityRace = async (
+      targetProtocol: AcpProtocol,
+      targetSessionId: string,
+      promptText: string,
+    ): Promise<unknown> => {
+      const outcome = await this.requestPromptWithInactivityRace(
+        targetProtocol,
+        targetSessionId,
+        promptText,
+        waitForInactivity,
+      );
+
+      if (outcome.kind === "inactivity") {
+        needsRecovery = true;
+        waitForInactivity = this.createInactivitySignal((resolve) => {
+          resolveInactivitySignal = resolve;
+        });
+        return {};
+      }
+
+      if (outcome.kind === "error") {
+        throw outcome.error;
+      }
+
+      return outcome.result;
+    };
+
+    try {
+      promptResult = await runPromptWithInactivityRace(
+        protocol,
+        sessionId,
+        builtPrompt,
+      );
+    } catch (promptError) {
+      if (this.deps.isMissingSessionError(promptError)) {
+        this.deps.log(
+          "ACP session missing during prompt. Recreating session and retrying once.",
+        );
+        const recovered = await this.deps.recoverMissingSession(options);
+        protocol = recovered.protocol;
+        sessionId = recovered.sessionId;
+        registerNotificationHandler(protocol);
+
+        promptResult = await runPromptWithInactivityRace(
+          protocol,
+          sessionId,
+          builtPrompt,
+        );
+      } else if (inactivityGuard.didTrigger) {
+        needsRecovery = true;
+      } else {
+        throw promptError;
+      }
+    } finally {
+      inactivityGuard.stop();
+    }
+
+    if (needsRecovery && inactivityGuard.lastTool) {
+      promptResult = await this.handleInactivityRecovery(
+        protocol,
+        sessionId,
+        inactivityGuard,
+        inactivityTimeoutMs,
+        onChunk,
+        registerNotificationHandler,
+      );
+    }
+
+    return { promptResult, needsRecovery, protocol, sessionId };
+  }
+
+  private async handleInactivityRecovery(
+    protocol: AcpProtocol,
+    sessionId: string,
+    inactivityGuard: InactivityGuard,
+    inactivityTimeoutMs: number,
+    onChunk: (chunk: StreamChunk) => void,
+    registerNotificationHandler: (targetProtocol: AcpProtocol) => void,
+  ): Promise<unknown> {
+    const stuckTool = inactivityGuard.lastTool!;
+    const toolDesc = stuckTool.title || stuckTool.name;
+    const timeoutMinutes = Math.round(inactivityTimeoutMs / 60000);
+
+    onChunk({
+      chunkType: "warning",
+      message: `Sub-agent "${toolDesc}" appears stuck (no activity for ${timeoutMinutes} min). Notifying main agent...`,
+    });
+
+    this.deps.chunkMapper.reset();
+    registerNotificationHandler(protocol);
+
+    const recoveryPrompt =
+      `<system-reminder>The sub-agent "${toolDesc}" (tool: ${stuckTool.name}) ` +
+      `was inactive for over ${timeoutMinutes} minutes and has been automatically cancelled. ` +
+      `It may not be available or may have encountered an internal error. ` +
+      `Please try a different approach or continue without this step.</system-reminder>`;
+    try {
+      return await this.requestPromptWithTimeout(
+        protocol,
+        sessionId,
+        recoveryPrompt,
+        SUBAGENT_CANCEL_RECOVERY_TIMEOUT_MS,
+      );
+    } catch (recoveryError) {
+      const recoveryMessage = toAppError(
+        recoveryError,
+        "Failed to request post-cancel recovery response",
+      ).message;
+      this.deps.log(`[ACP] ${recoveryMessage}`);
+      onChunk({
+        chunkType: "warning",
+        message: `Sub-agent was cancelled, but recovery prompt failed: ${recoveryMessage}`,
+      });
+      return undefined;
+    }
+  }
+
+  private emitFinalChunks(
+    promptResult: unknown,
+    mappedSessionUpdateChunkCount: number,
+    onChunk: (chunk: StreamChunk) => void,
+  ): void {
+    const promptUsage =
+      this.deps.usageExtractor.extractUsageChunk(promptResult);
+    if (promptUsage) {
+      onChunk(promptUsage);
+    } else {
+      const keys = isObject(promptResult)
+        ? Object.keys(promptResult).join(",")
+        : typeof promptResult;
+      this.deps.log(
+        `[ACP] No usage data found in session/prompt result (keys: ${keys})`,
+      );
+    }
+    if (mappedSessionUpdateChunkCount === 0) {
+      const fallbackChunks = this.extractPromptResultChunks(promptResult);
+      if (fallbackChunks.length > 0) {
+        this.deps.log(
+          `[ACP] No session/update chunks received; rendering ${fallbackChunks.length} fallback chunk(s) from session/prompt result`,
+        );
+        for (const fallbackChunk of fallbackChunks) {
+          onChunk(fallbackChunk);
+        }
+      } else {
+        this.deps.log(
+          "[ACP] No session/update chunks received and session/prompt result contained no renderable text",
+        );
+      }
+    }
+
+    for (const tailChunk of this.deps.chunkMapper.flushToChunks()) {
+      onChunk(tailChunk);
+    }
+  }
+
+  private createInactivitySignal(
+    registerResolve: (resolve: () => void) => void,
+  ): Promise<void> {
     return new Promise<void>((resolve) => {
       registerResolve(resolve);
     });
@@ -274,9 +401,9 @@ export class AcpRunExecutor {
     promptText: string,
     timeoutMs: number,
   ): Promise<unknown> {
-    const requestPromise = protocol.sendRequest('session/prompt', {
+    const requestPromise = protocol.sendRequest("session/prompt", {
       sessionId,
-      prompt: [{ type: 'text', text: promptText }],
+      prompt: [{ type: "text", text: promptText }],
     });
 
     if (timeoutMs <= 0) {
@@ -305,33 +432,33 @@ export class AcpRunExecutor {
     promptText: string,
     waitForInactivity: Promise<void>,
   ): Promise<
-    | { kind: 'result'; result: unknown }
-    | { kind: 'error'; error: unknown }
-    | { kind: 'inactivity' }
+    | { kind: "result"; result: unknown }
+    | { kind: "error"; error: unknown }
+    | { kind: "inactivity" }
   > {
-    const requestPromise = protocol.sendRequest('session/prompt', {
+    const requestPromise = protocol.sendRequest("session/prompt", {
       sessionId,
-      prompt: [{ type: 'text', text: promptText }],
+      prompt: [{ type: "text", text: promptText }],
     });
     let settled = false;
 
     const promptOutcome = requestPromise.then(
       (result) => {
         settled = true;
-        return { kind: 'result', result } as const;
+        return { kind: "result", result } as const;
       },
       (error) => {
         settled = true;
-        return { kind: 'error', error } as const;
+        return { kind: "error", error } as const;
       },
     );
 
     const raced = await Promise.race([
       promptOutcome,
-      waitForInactivity.then(() => ({ kind: 'inactivity' as const })),
+      waitForInactivity.then(() => ({ kind: "inactivity" as const })),
     ]);
 
-    if (!settled && raced.kind === 'inactivity') {
+    if (!settled && raced.kind === "inactivity") {
       requestPromise.catch(() => {});
     }
 
@@ -341,7 +468,9 @@ export class AcpRunExecutor {
   private extractPromptResultChunks(promptResult: unknown): StreamChunk[] {
     const chunks: StreamChunk[] = [];
 
-    for (const update of this.extractSessionUpdatesFromPromptResult(promptResult)) {
+    for (const update of this.extractSessionUpdatesFromPromptResult(
+      promptResult,
+    )) {
       chunks.push(...this.deps.chunkMapper.mapUpdateToChunks(update));
     }
     if (chunks.length > 0) {
@@ -352,10 +481,12 @@ export class AcpRunExecutor {
     if (!fallbackText) {
       return [];
     }
-    return [{ chunkType: 'text', content: fallbackText }];
+    return [{ chunkType: "text", content: fallbackText }];
   }
 
-  private extractSessionUpdatesFromPromptResult(payload: unknown): Record<string, unknown>[] {
+  private extractSessionUpdatesFromPromptResult(
+    payload: unknown,
+  ): Record<string, unknown>[] {
     if (!isObject(payload)) {
       return [];
     }
@@ -365,7 +496,7 @@ export class AcpRunExecutor {
       if (!isObject(candidate)) {
         return;
       }
-      if (typeof candidate.sessionUpdate === 'string') {
+      if (typeof candidate.sessionUpdate === "string") {
         updates.push(candidate);
       }
     };
@@ -387,7 +518,7 @@ export class AcpRunExecutor {
   }
 
   private extractPromptResultText(payload: unknown): string | null {
-    if (typeof payload === 'string') {
+    if (typeof payload === "string") {
       return payload.trim().length > 0 ? payload : null;
     }
     if (!isObject(payload)) {
@@ -419,32 +550,37 @@ export class AcpRunExecutor {
   }
 
   private extractTextFromCandidate(candidate: unknown): string | null {
-    if (typeof candidate === 'string') {
+    if (typeof candidate === "string") {
       return candidate.trim().length > 0 ? candidate : null;
     }
 
     if (Array.isArray(candidate)) {
       const parts = candidate
         .map((item) => this.extractTextFromCandidate(item))
-        .filter((part): part is string => Boolean(part && part.trim().length > 0));
+        .filter((part): part is string =>
+          Boolean(part && part.trim().length > 0),
+        );
       if (parts.length === 0) {
         return null;
       }
-      return parts.join('\n');
+      return parts.join("\n");
     }
 
     if (!isObject(candidate)) {
       return null;
     }
 
-    if (typeof candidate.role === 'string') {
+    if (typeof candidate.role === "string") {
       const role = candidate.role.toLowerCase();
-      if (role !== 'assistant' && role !== 'model') {
+      if (role !== "assistant" && role !== "model") {
         return null;
       }
     }
 
-    if (typeof candidate.text === 'string' && candidate.text.trim().length > 0) {
+    if (
+      typeof candidate.text === "string" &&
+      candidate.text.trim().length > 0
+    ) {
       return candidate.text;
     }
 
@@ -472,9 +608,9 @@ export class AcpRunExecutor {
   }
 
   private buildPromptPreview(prompt: string): string {
-    const condensed = prompt.replace(/\s+/g, ' ').trim();
+    const condensed = prompt.replace(/\s+/g, " ").trim();
     if (condensed.length === 0) {
-      return '(empty)';
+      return "(empty)";
     }
     if (condensed.length <= 160) {
       return condensed;

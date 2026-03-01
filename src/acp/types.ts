@@ -1,4 +1,10 @@
-import { AttachedFile, ConversationMode, IDEContext, ModelType, StreamChunk } from '../protocol';
+import {
+  AttachedFile,
+  ConversationMode,
+  IDEContext,
+  ModelType,
+  StreamChunk,
+} from "../protocol";
 
 export interface RunOptions {
   prompt: string;
@@ -20,31 +26,34 @@ export interface PermissionOption {
 }
 
 export interface PendingPermission {
-  kind: 'permission';
+  kind: "permission";
   resolve: (value: unknown) => void;
   options: PermissionOption[];
 }
 
 export interface PendingQuestion {
-  kind: 'question';
+  kind: "question";
   resolve: (value: unknown) => void;
 }
 
 export interface PendingPlan {
-  kind: 'plan';
+  kind: "plan";
   resolve: (value: unknown) => void;
 }
 
-export type PendingInteraction = PendingPermission | PendingQuestion | PendingPlan;
+export type PendingInteraction =
+  | PendingPermission
+  | PendingQuestion
+  | PendingPlan;
 
 export type ChunkSink = (chunk: StreamChunk) => void;
 
 export type ConnectionStatus =
-  | 'disconnected'
-  | 'connecting'
-  | 'initializing'
-  | 'ready'
-  | 'disposed';
+  | "disconnected"
+  | "connecting"
+  | "initializing"
+  | "ready"
+  | "disposed";
 
 export interface ConnectionSnapshot {
   status: ConnectionStatus;
@@ -56,13 +65,13 @@ export interface ConnectionSnapshot {
 }
 
 export type ConnectionStateReason =
-  | 'initial'
-  | 'connect_start'
-  | 'initialize_start'
-  | 'ready'
-  | 'dispose'
-  | 'closed'
-  | 'error';
+  | "initial"
+  | "connect_start"
+  | "initialize_start"
+  | "ready"
+  | "dispose"
+  | "closed"
+  | "error";
 
 export type ConnectionStateListener = (
   snapshot: ConnectionSnapshot,

@@ -7,6 +7,8 @@ import {
   type ToolBlock,
 } from './toolTypes';
 
+const PATH_KEYS = ['file_path', 'path', 'filePath', 'file', 'absolute_path'] as const;
+
 export function getToolHeadline(block: ToolBlock): string {
   const toolName = (block.name || '').toLowerCase();
   const input = block.input || {};
@@ -28,34 +30,36 @@ export function getToolHeadline(block: ToolBlock): string {
   }
 
   if (toolKind === 'read' || toolName.includes('read')) {
-    const path = getInputString(input, ['file_path', 'path', 'filePath', 'file', 'absolute_path']);
+    const path = getInputString(input, [...PATH_KEYS]);
     if (path) {
       const lineRange = getToolLineRange(input);
       return `Read ${getFileName(path)}${lineRange}`;
     }
+    const label = (block.label || '').trim();
+    return label || 'Read';
   }
 
   if (toolKind === 'write') {
-    const path = getInputString(input, ['file_path', 'path', 'filePath', 'file', 'absolute_path']);
+    const path = getInputString(input, [...PATH_KEYS]);
     if (path) {
       return `Write ${getFileName(path)}`;
     }
+    const label = (block.label || '').trim();
+    return label || 'Write File';
   }
 
   if (toolKind === 'edit') {
-    const path = getInputString(input, ['file_path', 'path', 'filePath', 'file', 'absolute_path']);
+    const path = getInputString(input, [...PATH_KEYS]);
     if (path) {
       return `Edit ${getFileName(path)}`;
     }
+    const label = (block.label || '').trim();
+    return label || 'Edit File';
   }
 
   const label = (block.label || '').trim();
   if (label) {
     return label;
-  }
-
-  if (toolKind === 'read') {
-    return 'Read';
   }
 
   if (toolKind === 'search' && toolName.includes('glob')) {
@@ -73,14 +77,6 @@ export function getToolHeadline(block: ToolBlock): string {
       return `Grep "${pattern}"`;
     }
     return 'Grep';
-  }
-
-  if (toolKind === 'write') {
-    return 'Write File';
-  }
-
-  if (toolKind === 'edit') {
-    return 'Edit File';
   }
 
   const command = getInputString(input, ['command', 'cmd']);

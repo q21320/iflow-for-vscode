@@ -1358,6 +1358,26 @@ select:focus-visible,
   white-space: nowrap;
 }
 
+/* CWD Indicator */
+.cwd-indicator {
+  cursor: default;
+  font-size: 11px;
+  opacity: 0.8;
+  gap: 3px;
+}
+
+.cwd-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.cwd-path {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Mode Popup */
 .mode-selector-wrapper {
   position: relative;

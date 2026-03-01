@@ -4,7 +4,7 @@ import {
   QuestionPanelDerived,
   QuestionPanelQuestion,
   QuestionPanelState,
-} from './questionPanelTypes';
+} from "./questionPanelTypes";
 
 function cloneSelections(selections: string[][]): string[][] {
   return selections.map((entry) => [...entry]);
@@ -17,7 +17,10 @@ function normalizeNavIndex(index: number, total: number): number {
   return ((index % total) + total) % total;
 }
 
-function getQuestionOptionCount(state: QuestionPanelState, questionIdx: number): number {
+function getQuestionOptionCount(
+  state: QuestionPanelState,
+  questionIdx: number,
+): number {
   const question = state.questions[questionIdx];
   if (!question) {
     return 0;
@@ -25,7 +28,10 @@ function getQuestionOptionCount(state: QuestionPanelState, questionIdx: number):
   return question.options.length + 1;
 }
 
-function clampOptionIndex(state: QuestionPanelState, questionIdx: number): number {
+function clampOptionIndex(
+  state: QuestionPanelState,
+  questionIdx: number,
+): number {
   const total = getQuestionOptionCount(state, questionIdx);
   if (total <= 0) {
     return 0;
@@ -35,19 +41,28 @@ function clampOptionIndex(state: QuestionPanelState, questionIdx: number): numbe
   return Math.min(Math.max(current, 0), total - 1);
 }
 
-function trimOtherValue(state: QuestionPanelState, questionIdx: number): string {
-  return (state.otherTextByQuestion[questionIdx] ?? '').trim();
+function trimOtherValue(
+  state: QuestionPanelState,
+  questionIdx: number,
+): string {
+  return (state.otherTextByQuestion[questionIdx] ?? "").trim();
 }
 
-function getSingleSelectedLabel(state: QuestionPanelState, questionIdx: number): string {
+function getSingleSelectedLabel(
+  state: QuestionPanelState,
+  questionIdx: number,
+): string {
   const selected = state.selectedOptionLabelsByQuestion[questionIdx];
   if (!selected || selected.length === 0) {
-    return '';
+    return "";
   }
-  return selected[0] ?? '';
+  return selected[0] ?? "";
 }
 
-function getMultiValues(state: QuestionPanelState, questionIdx: number): string[] {
+function getMultiValues(
+  state: QuestionPanelState,
+  questionIdx: number,
+): string[] {
   const values = [...(state.selectedOptionLabelsByQuestion[questionIdx] ?? [])];
   const otherValue = trimOtherValue(state, questionIdx);
   if (otherValue) {
@@ -56,7 +71,10 @@ function getMultiValues(state: QuestionPanelState, questionIdx: number): string[
   return values;
 }
 
-export function isQuestionAnswered(state: QuestionPanelState, questionIdx: number): boolean {
+export function isQuestionAnswered(
+  state: QuestionPanelState,
+  questionIdx: number,
+): boolean {
   const question = state.questions[questionIdx];
   if (!question) {
     return false;
@@ -66,11 +84,17 @@ export function isQuestionAnswered(state: QuestionPanelState, questionIdx: numbe
     return getMultiValues(state, questionIdx).length > 0;
   }
 
-  return Boolean(trimOtherValue(state, questionIdx) || getSingleSelectedLabel(state, questionIdx));
+  return Boolean(
+    trimOtherValue(state, questionIdx) ||
+    getSingleSelectedLabel(state, questionIdx),
+  );
 }
 
 export function canSubmitAnswers(state: QuestionPanelState): boolean {
-  return state.questions.length > 0 && state.questions.every((_, idx) => isQuestionAnswered(state, idx));
+  return (
+    state.questions.length > 0 &&
+    state.questions.every((_, idx) => isQuestionAnswered(state, idx))
+  );
 }
 
 export function createQuestionPanelState(
@@ -86,18 +110,24 @@ export function createQuestionPanelState(
     activeNavIndex: initialNavIndex,
     activeOptionIndexByQuestion: questions.map(() => 0),
     selectedOptionLabelsByQuestion: questions.map(() => []),
-    otherTextByQuestion: questions.map(() => ''),
+    otherTextByQuestion: questions.map(() => ""),
     isReviewMode: false,
     showSubmitError: false,
   };
 }
 
-export function deriveQuestionPanelState(state: QuestionPanelState): QuestionPanelDerived {
+export function deriveQuestionPanelState(
+  state: QuestionPanelState,
+): QuestionPanelDerived {
   const questionCount = state.questions.length;
   const submitNavIndex = questionCount;
-  const answeredByQuestion = state.questions.map((_question, idx) => isQuestionAnswered(state, idx));
+  const answeredByQuestion = state.questions.map((_question, idx) =>
+    isQuestionAnswered(state, idx),
+  );
   const activeQuestion = state.questions[state.activeQuestionIndex] ?? null;
-  const activeOptionIndex = activeQuestion ? clampOptionIndex(state, state.activeQuestionIndex) : 0;
+  const activeOptionIndex = activeQuestion
+    ? clampOptionIndex(state, state.activeQuestionIndex)
+    : 0;
 
   return {
     questionCount,
@@ -109,7 +139,10 @@ export function deriveQuestionPanelState(state: QuestionPanelState): QuestionPan
   };
 }
 
-function applyActivateOption(state: QuestionPanelState, optionIdx: number): QuestionPanelState {
+function applyActivateOption(
+  state: QuestionPanelState,
+  optionIdx: number,
+): QuestionPanelState {
   const question = state.questions[state.activeQuestionIndex];
   if (!question) {
     return state;
@@ -140,7 +173,9 @@ function applyActivateOption(state: QuestionPanelState, optionIdx: number): Ques
   }
 
   if (question.multiSelect) {
-    const nextSelections = cloneSelections(baseState.selectedOptionLabelsByQuestion);
+    const nextSelections = cloneSelections(
+      baseState.selectedOptionLabelsByQuestion,
+    );
     const selected = nextSelections[state.activeQuestionIndex];
     if (!selected) {
       return baseState;
@@ -158,10 +193,12 @@ function applyActivateOption(state: QuestionPanelState, optionIdx: number): Ques
     };
   }
 
-  const nextSelections = cloneSelections(baseState.selectedOptionLabelsByQuestion);
+  const nextSelections = cloneSelections(
+    baseState.selectedOptionLabelsByQuestion,
+  );
   nextSelections[state.activeQuestionIndex] = [option.label];
   const nextOtherTexts = [...baseState.otherTextByQuestion];
-  nextOtherTexts[state.activeQuestionIndex] = '';
+  nextOtherTexts[state.activeQuestionIndex] = "";
 
   let nextState: QuestionPanelState = {
     ...baseState,
@@ -228,7 +265,9 @@ function applyCommitOtherInput(
     return nextState;
   }
 
-  const nextSelections = cloneSelections(nextState.selectedOptionLabelsByQuestion);
+  const nextSelections = cloneSelections(
+    nextState.selectedOptionLabelsByQuestion,
+  );
   nextSelections[questionIdx] = [];
   nextState = {
     ...nextState,
@@ -255,13 +294,19 @@ function applyCommitOtherInput(
   };
 }
 
-function applyMoveNav(state: QuestionPanelState, delta: number): QuestionPanelState {
+function applyMoveNav(
+  state: QuestionPanelState,
+  delta: number,
+): QuestionPanelState {
   const totalNavItems = state.questions.length + 1;
   if (totalNavItems <= 0) {
     return state;
   }
 
-  const nextNav = normalizeNavIndex(state.activeNavIndex + delta, totalNavItems);
+  const nextNav = normalizeNavIndex(
+    state.activeNavIndex + delta,
+    totalNavItems,
+  );
   if (nextNav < state.questions.length) {
     return {
       ...state,
@@ -292,7 +337,10 @@ function applyMoveNav(state: QuestionPanelState, delta: number): QuestionPanelSt
   };
 }
 
-function applySetNavIndex(state: QuestionPanelState, navIndex: number): QuestionPanelState {
+function applySetNavIndex(
+  state: QuestionPanelState,
+  navIndex: number,
+): QuestionPanelState {
   const totalNavItems = state.questions.length + 1;
   if (totalNavItems <= 0) {
     return state;
@@ -331,7 +379,10 @@ function applyMoveOptionForQuestion(
 
   const nextOptionIndexes = [...state.activeOptionIndexByQuestion];
   const current = nextOptionIndexes[questionIdx] ?? 0;
-  nextOptionIndexes[questionIdx] = normalizeNavIndex(current + delta, totalOptions);
+  nextOptionIndexes[questionIdx] = normalizeNavIndex(
+    current + delta,
+    totalOptions,
+  );
 
   return {
     ...state,
@@ -365,28 +416,36 @@ export function reduceQuestionPanelState(
   action: QuestionPanelAction,
 ): QuestionPanelState {
   switch (action.type) {
-    case 'activateOption':
+    case "activateOption":
       return applyActivateOption(state, action.optionIdx);
 
-    case 'setOtherText':
+    case "setOtherText":
       return applySetOtherText(state, action.questionIdx, action.value);
 
-    case 'commitOtherInput':
+    case "commitOtherInput":
       return applyCommitOtherInput(state, action.questionIdx);
 
-    case 'moveNav':
+    case "moveNav":
       return applyMoveNav(state, action.delta);
 
-    case 'setNavIndex':
+    case "setNavIndex":
       return applySetNavIndex(state, action.navIndex);
 
-    case 'moveOption':
-      return applyMoveOptionForQuestion(state, state.activeQuestionIndex, action.delta);
+    case "moveOption":
+      return applyMoveOptionForQuestion(
+        state,
+        state.activeQuestionIndex,
+        action.delta,
+      );
 
-    case 'moveOptionForQuestion':
-      return applyMoveOptionForQuestion(state, action.questionIdx, action.delta);
+    case "moveOptionForQuestion":
+      return applyMoveOptionForQuestion(
+        state,
+        action.questionIdx,
+        action.delta,
+      );
 
-    case 'attemptSubmit':
+    case "attemptSubmit":
       return applyAttemptSubmit(state);
 
     default:
@@ -398,19 +457,18 @@ export function shouldSubmitAnswers(
   previousState: QuestionPanelState,
   nextState: QuestionPanelState,
 ): boolean {
-  if (!previousState.isReviewMode) {
+  if (!previousState.isReviewMode || !nextState.isReviewMode) {
     return false;
   }
-  if (previousState.showSubmitError !== nextState.showSubmitError) {
+  if (nextState.showSubmitError) {
     return false;
   }
-  if (!canSubmitAnswers(previousState)) {
-    return false;
-  }
-  return previousState === nextState;
+  return canSubmitAnswers(nextState);
 }
 
-export function buildQuestionAnswerPayload(state: QuestionPanelState): QuestionAnswerPayload {
+export function buildQuestionAnswerPayload(
+  state: QuestionPanelState,
+): QuestionAnswerPayload {
   const answers: QuestionAnswerPayload = {};
 
   state.questions.forEach((question, qIdx) => {
@@ -418,7 +476,8 @@ export function buildQuestionAnswerPayload(state: QuestionPanelState): QuestionA
       answers[question.header] = getMultiValues(state, qIdx);
       return;
     }
-    answers[question.header] = trimOtherValue(state, qIdx) || getSingleSelectedLabel(state, qIdx) || '';
+    answers[question.header] =
+      trimOtherValue(state, qIdx) || getSingleSelectedLabel(state, qIdx) || "";
   });
 
   return answers;
@@ -429,7 +488,7 @@ export function buildCancelledQuestionAnswerPayload(
 ): QuestionAnswerPayload {
   const answers: QuestionAnswerPayload = {};
   questions.forEach((question) => {
-    answers[question.header] = '';
+    answers[question.header] = "";
   });
   return answers;
 }
