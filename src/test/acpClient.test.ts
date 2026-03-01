@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import { AcpClient } from '../acpClient';
+import { InactivityGuard } from '../acp/inactivityGuard';
 
 class FakeTransport {
   connected = false;
@@ -177,6 +178,7 @@ suite('AcpClient', () => {
     assert.ok(newSession);
     assert.deepStrictEqual((newSession?.params as any)?.settings, {
       permission_mode: 'smart',
+      append_system_prompt: '',
       add_dirs: ['/tmp/workspace'],
     });
 
@@ -472,6 +474,97 @@ suite('AcpClient', () => {
     assert.strictEqual(ended, true);
   });
 
+  test('run recovers when task subagent remains in_progress without follow-up updates', async function () {
+    this.timeout(5000);
+
+    const chunks: any[] = [];
+    let ended = false;
+    let error: string | null = null;
+    let promptCallCount = 0;
+
+    (client as any).runExecutor.deps.getConfig = <T>(key: string, defaultValue: T): T => {
+      if (key === 'subagentInactivityTimeoutMs') {
+        return 30 as T;
+      }
+      return defaultValue;
+    };
+    (client as any).runExecutor.deps.createInactivityGuard = (
+      timeoutMs: number,
+      onTimeout: () => void,
+      log: (message: string) => void,
+    ) => new InactivityGuard(timeoutMs, () => onTimeout(), log, 5);
+
+    const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
+    fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
+      if (method === 'session/prompt') {
+        promptCallCount += 1;
+
+        if (promptCallCount === 1) {
+          fakeProtocol.simulateUpdate({
+            sessionUpdate: 'tool_call',
+            status: 'pending',
+            toolName: 'task',
+            toolCallId: 'call-task-1',
+            title: 'task',
+          });
+          fakeProtocol.simulateUpdate({
+            sessionUpdate: 'tool_call_update',
+            status: 'in_progress',
+            toolName: 'task',
+            toolCallId: 'call-task-1',
+            title: 'Launch agent(frontend-tester): Validate game',
+            args: {
+              subagent_type: 'frontend-tester',
+              description: 'Validate game',
+            },
+          });
+          return new Promise<unknown>(() => {});
+        }
+
+        fakeProtocol.simulateUpdate({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Recovered after stuck sub-agent cancellation.' },
+        });
+        return { stopReason: 'end_turn' };
+      }
+
+      return originalSendRequest(method, params);
+    };
+
+    const sessionId = await client.run(
+      {
+        prompt: 'validate red-alert game',
+        attachedFiles: [],
+        mode: 'default',
+        think: false,
+        model: 'GLM-4.7' as any,
+      },
+      (chunk) => chunks.push(chunk),
+      () => { ended = true; },
+      (err) => { error = err; },
+    );
+
+    assert.strictEqual(error, null);
+    assert.strictEqual(ended, true);
+    assert.strictEqual(sessionId, 'test-session-123');
+    assert.ok(promptCallCount >= 2, `expected at least 2 session/prompt calls, got ${promptCallCount}`);
+    assert.ok(fakeProtocol.requests.some((r) => r.method === 'session/cancel'));
+    assert.ok(
+      chunks.some((chunk) =>
+        chunk.chunkType === 'warning'
+        && typeof chunk.message === 'string'
+        && chunk.message.includes('appears stuck')
+      ),
+    );
+    assert.ok(
+      chunks.some((chunk) =>
+        chunk.chunkType === 'text'
+        && typeof chunk.content === 'string'
+        && chunk.content.includes('Recovered after stuck sub-agent cancellation.')
+      ),
+    );
+  });
+
   test('permission server method emits tool_confirmation and uses server optionId', async () => {
     const chunks: any[] = [];
 
@@ -518,6 +611,47 @@ suite('AcpClient', () => {
     assert.strictEqual(confirmation.requestId, 77);
     assert.strictEqual(confirmation.toolName, 'write_file');
     assert.strictEqual(confirmation.confirmationType, 'edit');
+  });
+
+  test('legacy _iflow/plan/exit server method emits plan_approval and resolves approval', async () => {
+    const chunks: any[] = [];
+    let resolvedPlanValue: unknown = null;
+
+    const originalSendRequest = fakeProtocol.sendRequest.bind(fakeProtocol);
+    fakeProtocol.sendRequest = async (method: string, params?: unknown) => {
+      if (method === 'session/prompt') {
+        const waitPlan = fakeProtocol.simulateServerMethod('_iflow/plan/exit', 88, {
+          plan: '1. Design\n2. Build\n3. Verify',
+        });
+
+        setTimeout(() => {
+          void client.approvePlan(88, true);
+        }, 0);
+
+        resolvedPlanValue = await waitPlan;
+      }
+
+      return originalSendRequest(method, params);
+    };
+
+    await client.run(
+      {
+        prompt: 'make a plan',
+        attachedFiles: [],
+        mode: 'plan',
+        think: false,
+        model: 'GLM-4.7' as any,
+      },
+      (chunk) => chunks.push(chunk),
+      () => {},
+      () => {},
+    );
+
+    assert.deepStrictEqual(resolvedPlanValue, { approved: true });
+    const planApproval = chunks.find((c) => c.chunkType === 'plan_approval');
+    assert.ok(planApproval);
+    assert.strictEqual(planApproval.requestId, 88);
+    assert.strictEqual(planApproval.plan, '1. Design\n2. Build\n3. Verify');
   });
 
   test('approveToolCall maps allow/alwaysAllow to server-provided option IDs', async () => {

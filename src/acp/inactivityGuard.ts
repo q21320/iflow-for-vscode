@@ -4,6 +4,7 @@ import { isObject } from '../shared/typeGuards';
 export interface InProgressTool {
   name: string;
   title: string;
+  toolCallId?: string;
 }
 
 export class InactivityGuard {
@@ -25,15 +26,42 @@ export class InactivityGuard {
       return;
     }
 
-    if (
-      update.sessionUpdate === 'tool_call_update'
-      && update.status === 'in_progress'
-      && typeof update.toolName === 'string'
-    ) {
+    const isToolUpdate = update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update';
+    if (!isToolUpdate || typeof update.toolName !== 'string') {
+      return;
+    }
+
+    const status = typeof update.status === 'string'
+      ? update.status
+      : update.sessionUpdate === 'tool_call'
+        ? 'pending'
+        : 'in_progress';
+    const toolCallId = typeof update.toolCallId === 'string'
+      ? update.toolCallId
+      : null;
+
+    if (status === 'pending' || status === 'in_progress') {
       this.lastInProgressTool = {
         name: update.toolName,
         title: typeof update.title === 'string' ? update.title : '',
+        ...(toolCallId ? { toolCallId } : {}),
       };
+      return;
+    }
+
+    if (status !== 'completed' && status !== 'failed') {
+      return;
+    }
+
+    if (!this.lastInProgressTool) {
+      return;
+    }
+
+    const sameToolCall = toolCallId
+      ? this.lastInProgressTool.toolCallId === toolCallId
+      : this.lastInProgressTool.name === update.toolName;
+    if (sameToolCall) {
+      this.lastInProgressTool = null;
     }
   }
 

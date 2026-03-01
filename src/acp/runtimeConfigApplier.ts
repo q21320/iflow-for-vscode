@@ -3,41 +3,11 @@ import { RunOptions } from './types';
 import { AcpProtocol } from '../acpProtocol';
 import * as path from 'path';
 
-/**
- * Plan mode workflow instructions appended to the system prompt when the
- * session mode is 'plan'. The ACP path does not inject these automatically.
- */
 const PLAN_MODE_INSTRUCTIONS = `
-Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
-
-## Enhanced Planning Workflow
-
-### Phase 1: Initial Understanding
-Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions.
-
-1. Focus on understanding the user's request and the code associated with their request
-2. Use read-only tools (read_file, glob, list_directory, search_file_content) to explore the codebase
-3. If you need clarification, use the ask_user_question tool to ask structured questions with predefined options
-
-### Phase 2: Planning
-Goal: Come up with an approach to solve the problem identified in phase 1.
-- Provide any background context that may help with the task
-- Create a detailed plan using todo_write
-
-### Phase 3: Review
-Goal: Review the plan(s) from Phase 2 and ensure alignment with the user's intentions.
-1. Read the critical files to deepen your understanding
-2. Ensure that the plans align with the user's original request
-3. Use the ask_user_question tool to ask the user any remaining questions
-
-### Phase 4: Final Plan
-Once you have all the information you need, provide your synthesized recommendation including:
-- Recommended approach with rationale
-- Key insights from different perspectives
-
-### Phase 5: Call exit_plan_mode
-CRITICAL: At the very end of your turn, once you are happy with your final plan, you MUST call the exit_plan_mode tool. This is mandatory.
-Your turn should ONLY end by calling exit_plan_mode. Do NOT end your turn with just text - always call exit_plan_mode as the final action.
+Plan mode is active.
+You must stay in planning-only mode.
+Do not execute modifying actions (no file writes/edits, no state-changing shell commands, no commits).
+Use read-only analysis and provide a concrete implementation plan, then wait for user approval.
 `.trim();
 
 const MODEL_ID_MAP: Partial<Record<ModelType, string>> = {
@@ -63,6 +33,10 @@ export class RuntimeConfigApplier {
 
     if (options.mode === 'plan') {
       sessionSettings.append_system_prompt = PLAN_MODE_INSTRUCTIONS;
+    } else {
+      // Explicitly clear any prior plan-only system reminder when reloading
+      // an existing session from plan mode back to execution/chat modes.
+      sessionSettings.append_system_prompt = '';
     }
 
     if (options.fileAllowedDirs && options.fileAllowedDirs.length > 0) {

@@ -297,6 +297,11 @@ export class WebviewHandler {
             return;
           }
 
+          if (msg.requestId < 0) {
+            this.debug(`Ignoring planApproval with invalid requestId=${msg.requestId}`);
+            return;
+          }
+
           const approved = this.planApprovalCoordinator.registerServerApproval(msg.option, msg.feedback);
           await this.client.approvePlan(msg.requestId, approved);
         },

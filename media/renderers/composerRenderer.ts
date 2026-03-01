@@ -179,7 +179,7 @@ export function renderComposer(opts: {
   `;
 }
 
-function renderRoundFileChanges(summary: RoundFileChangeSummary | undefined): string {
+export function renderRoundFileChanges(summary: RoundFileChangeSummary | undefined): string {
   if (!summary || summary.changedFiles.length === 0) {
     return '';
   }

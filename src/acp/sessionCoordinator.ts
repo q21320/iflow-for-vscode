@@ -326,6 +326,7 @@ export class SessionCoordinator {
 
     const cwd = options.cwd ?? process.cwd();
     const sessionSettings = this.deps.runtimeConfigApplier.buildSessionSettings(options);
+    const modeChanged = this.snapshot.connectedMode !== null && this.snapshot.connectedMode !== options.mode;
 
     if (!options.sessionId) {
       // New conversation (no sessionId) — create a fresh server-side session
@@ -363,6 +364,16 @@ export class SessionCoordinator {
         },
         'ready',
       );
+    } else if (modeChanged) {
+      // Same session id but different mode (for example plan -> smart/default):
+      // reload session settings so mode-specific prompts (append_system_prompt)
+      // do not leak into the next run.
+      await this.protocol.sendRequest('session/load', {
+        sessionId: options.sessionId,
+        cwd,
+        mcpServers: [],
+        settings: sessionSettings,
+      });
     }
 
     await this.deps.runtimeConfigApplier.applySessionRuntimeSettings(

@@ -192,7 +192,7 @@ export function renderPendingIndicator(faviconUri: string, statusText = 'Flowing
   return `
     <div class="pending-indicator">
       <div class="bounce-logo"><img src="${faviconUri}" alt="IFlow" class="bounce-logo-icon" /></div>
-      <span>${escapeHtml(statusText)}</span>
+      <span class="pending-indicator-text">${escapeHtml(statusText)}</span>
     </div>
   `;
 }

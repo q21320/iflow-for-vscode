@@ -27,6 +27,21 @@ function findToolBlockIndexByCallId(blocks: OutputBlock[], toolCallId: string): 
   return -1;
 }
 
+function findLatestRunningAnonymousToolIndexByName(blocks: OutputBlock[], toolName: string): number {
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const block = blocks[i];
+    if (
+      block.type === 'tool'
+      && block.status === 'running'
+      && block.name === toolName
+      && !block.toolCallId
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 export function applyChunkToMessage(message: Message, chunk: StreamChunk): Message {
   const blocks = [...message.blocks];
 
@@ -72,9 +87,16 @@ export function applyChunkToMessage(message: Message, chunk: StreamChunk): Messa
       return message;
 
     case 'tool_start': {
-      const idx = chunk.toolCallId
+      let idx = chunk.toolCallId
         ? findToolBlockIndexByCallId(blocks, chunk.toolCallId)
         : findLatestToolBlockIndex(blocks);
+
+      // Some ACP runtimes emit an early anonymous start, then attach toolCallId
+      // on a later update. Reuse the running anonymous block instead of creating
+      // a duplicate row that would otherwise remain "running" forever.
+      if (idx === -1 && chunk.toolCallId) {
+        idx = findLatestRunningAnonymousToolIndexByName(blocks, chunk.name);
+      }
 
       if (idx !== -1) {
         const targetTool = blocks[idx] as Extract<OutputBlock, { type: 'tool' }>;

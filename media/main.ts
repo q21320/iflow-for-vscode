@@ -8,6 +8,7 @@ import type {
   IDEContext,
 } from '../src/protocol';
 import { formatStreamStatusText } from '../src/streamStatusUtils';
+import { formatSubagentProgressText, SubagentProgressTracker } from '../src/shared/subagentProgressTracker';
 import { escapeHtml } from './markdownRenderer';
 import { SlashMenuController } from './slashMenuController';
 import { InputController } from './inputController';
@@ -24,12 +25,14 @@ import {
   renderMessages,
   renderComposer,
   renderIDEContextChips,
+  renderRoundFileChanges,
 } from './appRenderer';
 import type { PendingConfirmation, PendingQuestion, PendingPlanApproval } from './panels/panelTypes';
 import {
   attachTopBarListeners,
   attachModeListeners,
   attachComposerListeners,
+  attachFileChangeReviewListeners,
   attachContentListeners,
   attachFileOpenListeners,
   attachIDEContextListeners,
@@ -55,6 +58,9 @@ interface VsCodeApi {
 
 declare function acquireVsCodeApi(): VsCodeApi;
 
+const STREAM_AUTO_SCROLL_THRESHOLD_PX = 120;
+const SUBAGENT_PENDING_TICK_MS = 1000;
+
 class IFlowApp implements AppHost {
   private readonly vscode: VsCodeApi;
   private readonly appState = new AppState();
@@ -65,6 +71,8 @@ class IFlowApp implements AppHost {
   private readonly visualUpdateScheduler: VisualUpdateScheduler;
   private readonly renderDriver: WebviewRenderDriver;
   private readonly lifecycle = new AppLifecycle();
+  private readonly subagentProgressTracker = new SubagentProgressTracker();
+  private subagentPendingTicker: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.vscode = acquireVsCodeApi();
@@ -137,6 +145,7 @@ class IFlowApp implements AppHost {
         }
         this.render(conversationChanged);
       },
+      updateRoundFileChanges: () => this.updateRoundFileChangesCard(),
       updateStreamingContent: () => this.scheduleStreamingContentUpdate(),
       updatePendingIndicator: () => this.schedulePendingIndicatorUpdate(),
       updateIDEContextChips: () => this.updateIDEContextChips(),
@@ -219,6 +228,10 @@ class IFlowApp implements AppHost {
     this.appState.ideContextDismissed = { ...this.appState.ideContextDismissed, [type]: true };
   }
 
+  patchIDEContextChips(): void {
+    this.updateIDEContextChips();
+  }
+
   autoSizeSelect(select: HTMLSelectElement): void {
     const option = select.options[select.selectedIndex];
     if (!option) return;
@@ -255,8 +268,8 @@ class IFlowApp implements AppHost {
     return this.inputCtrl.handleEnterKey();
   }
 
-  inputCtrlHandleEscapeKey(): void {
-    this.inputCtrl.handleEscapeKey();
+  inputCtrlHandleEscapeKey(): boolean {
+    return this.inputCtrl.handleEscapeKey();
   }
 
   sendMessage(): void {
@@ -294,7 +307,9 @@ class IFlowApp implements AppHost {
   }
 
   private handleMessage(message: ExtensionMessage): void {
+    this.updateSubagentProgress(message);
     this.messageRouter.handle(message);
+    this.syncSubagentPendingTicker();
   }
 
   render(smoothScrollToBottom = false): void {
@@ -377,13 +392,48 @@ class IFlowApp implements AppHost {
   }
 
   private applyStreamingContentUpdate(): void {
+    const shouldAutoScroll = this.isMessagesViewNearBottom();
     updateStreamingContentView({
       conversation: this.getCurrentConversation(),
       fallbackRender: () => this.render(),
       updatePendingIndicator: (container) => this.applyPendingIndicatorUpdate(container),
       updateComposerStatusBar: () => this.updateComposerStatusBar(),
-      scrollToBottom: () => this.scrollToBottom(),
+      scrollToBottom: () => {
+        if (shouldAutoScroll) {
+          this.scrollToBottom();
+        }
+      },
     });
+  }
+
+  private updateRoundFileChangesCard(): void {
+    const conversation = this.getCurrentConversation();
+    if (!conversation) {
+      return;
+    }
+
+    const composer = document.querySelector('.composer') as HTMLElement | null;
+    if (!composer) {
+      return;
+    }
+
+    const summary = this.appState.latestRoundChangesByConversationId.get(conversation.id);
+    const nextHtml = renderRoundFileChanges(summary);
+    const existing = composer.querySelector('.round-file-changes-card') as HTMLElement | null;
+
+    if (!nextHtml) {
+      existing?.remove();
+      this.syncMessagesBottomInset();
+      return;
+    }
+
+    if (existing) {
+      existing.outerHTML = nextHtml;
+    } else {
+      composer.insertAdjacentHTML('afterbegin', nextHtml);
+    }
+    attachFileChangeReviewListeners(this);
+    this.syncMessagesBottomInset();
   }
 
   private updateIDEContextChips(): void {
@@ -419,7 +469,65 @@ class IFlowApp implements AppHost {
   }
 
   private getPendingIndicatorText(): string {
+    const activeProgress = this.subagentProgressTracker.active;
+    if ((this.appState.state?.isStreaming ?? false) && activeProgress) {
+      return formatSubagentProgressText(activeProgress, Date.now());
+    }
     return formatStreamStatusText(this.appState.streamStatus);
+  }
+
+  private updateSubagentProgress(message: ExtensionMessage): void {
+    if (message.type === 'streamChunk') {
+      const changed = this.subagentProgressTracker.onChunk(message.chunk);
+      if (changed && (this.appState.state?.isStreaming ?? false)) {
+        this.schedulePendingIndicatorUpdate();
+      }
+      return;
+    }
+
+    if (message.type === 'streamEnd' || message.type === 'streamError') {
+      const changed = this.subagentProgressTracker.reset();
+      if (changed) {
+        this.schedulePendingIndicatorUpdate();
+      }
+      return;
+    }
+
+    if (message.type === 'stateUpdated' && !message.state.isStreaming) {
+      const changed = this.subagentProgressTracker.reset();
+      if (changed) {
+        this.schedulePendingIndicatorUpdate();
+      }
+    }
+  }
+
+  private syncSubagentPendingTicker(): void {
+    const shouldRunTicker = (this.appState.state?.isStreaming ?? false) && this.subagentProgressTracker.active !== null;
+    if (!shouldRunTicker) {
+      this.stopSubagentPendingTicker();
+      return;
+    }
+
+    if (this.subagentPendingTicker) {
+      return;
+    }
+
+    this.subagentPendingTicker = setInterval(() => {
+      const stillStreaming = this.appState.state?.isStreaming ?? false;
+      if (!stillStreaming || this.subagentProgressTracker.active === null) {
+        this.stopSubagentPendingTicker();
+        return;
+      }
+      this.schedulePendingIndicatorUpdate();
+    }, SUBAGENT_PENDING_TICK_MS);
+  }
+
+  private stopSubagentPendingTicker(): void {
+    if (!this.subagentPendingTicker) {
+      return;
+    }
+    clearInterval(this.subagentPendingTicker);
+    this.subagentPendingTicker = null;
   }
 
   private setupComposerLayoutObserver(): void {
@@ -447,8 +555,19 @@ class IFlowApp implements AppHost {
     }
   }
 
+  private isMessagesViewNearBottom(): boolean {
+    const container = document.getElementById('messages-container');
+    if (!container) {
+      return true;
+    }
+
+    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return distanceToBottom <= STREAM_AUTO_SCROLL_THRESHOLD_PX;
+  }
+
   dispose(): void {
     this.visualUpdateScheduler.cancelAll();
+    this.stopSubagentPendingTicker();
     this.lifecycle.dispose();
     this.slashMenu.dispose();
     this.inputCtrl.dispose();

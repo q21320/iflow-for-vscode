@@ -261,11 +261,64 @@ suite('SendMessagePipeline', () => {
     assert.ok(!streamError?.error.includes('Re-check CLI'));
   });
 
-  test('replays approved plan via queue without recursive send', async () => {
+  test('opens synthetic plan approval when run ends without server plan_approval chunk', async () => {
     const store = createStore();
     store.setMode('plan');
 
     const client = new FakeClient(async (options, _onChunk, onEnd) => {
+      onEnd();
+      return `session-${options.mode}`;
+    });
+
+    const messages: ExtensionMessage[] = [];
+    const planApprovalCoordinator = new PlanApprovalCoordinator(new PlanModeOrchestrator());
+    const pipeline = new SendMessagePipeline({
+      store,
+      client: client as unknown as import('../acpClient').AcpClient,
+      postMessage: (message) => {
+        messages.push(message);
+        if (message.type === 'streamChunk'
+          && message.chunk.chunkType === 'plan_approval'
+          && message.chunk.requestId === -1) {
+          planApprovalCoordinator.registerSyntheticApproval('keep');
+        }
+      },
+      markCliUnavailable: () => {},
+      resolveWorkspaceFolder: () => '/tmp/workspace',
+      getAllWorkspaceFolderPaths: () => ['/tmp/workspace'],
+      getWorkspaceFileList: async () => [],
+      shouldIncludeWorkspaceFiles: () => false,
+      getWorkspaceFilesLimit: () => 80,
+      getStreamRenderIntervalMs: () => 50,
+      planApprovalCoordinator,
+      debug: () => {},
+      setSessionId: (sessionId) => store.setSessionId(sessionId),
+    });
+
+    await pipeline.execute({
+      content: 'plan this work',
+      attachedFiles: [],
+      silent: false,
+    });
+
+    assert.strictEqual(client.runCalls.length, 1);
+    assert.strictEqual(client.runCalls[0].mode, 'plan');
+    assert.strictEqual(store.getCurrentConversation()?.mode, 'plan');
+    assert.ok(messages.some(
+      (m) => m.type === 'streamChunk'
+        && m.chunk.chunkType === 'plan_approval'
+        && m.chunk.requestId === -1
+    ));
+  });
+
+  test('replays approved server plan via queue without recursive send', async () => {
+    const store = createStore();
+    store.setMode('plan');
+
+    const client = new FakeClient(async (options, onChunk, onEnd) => {
+      if (options.mode === 'plan') {
+        onChunk({ chunkType: 'plan_approval', requestId: 42, plan: 'final plan' });
+      }
       onEnd();
       return `session-${options.mode}`;
     });
@@ -280,8 +333,8 @@ suite('SendMessagePipeline', () => {
         messages.push(message);
         if (message.type === 'streamChunk'
           && message.chunk.chunkType === 'plan_approval'
-          && message.chunk.requestId === -1) {
-          planApprovalCoordinator.registerSyntheticApproval('smart');
+          && message.chunk.requestId === 42) {
+          planApprovalCoordinator.registerServerApproval('smart');
         }
       },
       markCliUnavailable: () => {},
@@ -306,7 +359,11 @@ suite('SendMessagePipeline', () => {
     assert.strictEqual(client.runCalls[0].mode, 'plan');
     assert.strictEqual(client.runCalls[1].mode, 'smart');
     assert.ok(client.runCalls[1].prompt.includes('system-reminder'));
-    assert.ok(messages.some((m) => m.type === 'streamChunk' && m.chunk.chunkType === 'plan_approval'));
+    assert.ok(messages.some(
+      (m) => m.type === 'streamChunk'
+        && m.chunk.chunkType === 'plan_approval'
+        && m.chunk.requestId === 42
+    ));
   });
 
   test('normalizes empty runtime errors before emitting streamError', async () => {

@@ -1602,6 +1602,13 @@ select option {
   gap: var(--spacing-sm);
   padding: var(--spacing-md);
   color: var(--text-secondary);
+}
+
+.pending-indicator-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-style: italic;
 }
 

@@ -2,24 +2,25 @@ import * as assert from "assert";
 import * as path from "path";
 import { runNodeScript } from "./realCliTestHelper";
 
-suite("ACP Real CLI Smoke", () => {
-  test("runs scripts/iflow-sdk-edit-test.mjs with real iflow cli", async function () {
+suite("ACP Real CLI Plan Mode Smoke", () => {
+  test("runs scripts/plan-mode-e2e-test.mjs with real iflow cli", async function () {
     if (process.env.IFLOW_REAL_CLI_TEST !== "1") {
       this.skip();
     }
 
-    this.timeout(180_000);
+    this.timeout(240_000);
 
     const rootDir = path.resolve(__dirname, "..", "..");
     const scriptPath = path.join(
       rootDir,
       "scripts",
-      "iflow-sdk-edit-test.mjs",
+      "plan-mode-e2e-test.mjs",
     );
     const result = await runNodeScript(rootDir, scriptPath, {
       ...process.env,
-      IFLOW_ACP_PORT: process.env.IFLOW_ACP_PORT || "8123",
-      IFLOW_ACP_STREAM: process.env.IFLOW_ACP_STREAM || "1",
+      IFLOW_ACP_PORT: process.env.IFLOW_ACP_PORT || "8124",
+      IFLOW_ACP_PHASE_TIMEOUT_MS:
+        process.env.IFLOW_ACP_PHASE_TIMEOUT_MS || "60000",
       IFLOW_ACP_DUMP_ALL: process.env.IFLOW_ACP_DUMP_ALL || "0",
     });
 
@@ -27,9 +28,9 @@ suite("ACP Real CLI Smoke", () => {
     assert.strictEqual(
       result.code,
       0,
-      `real CLI smoke test failed (code=${String(result.code)})\n${output}`,
+      `plan mode E2E test failed (code=${String(result.code)})\n${output}`,
     );
-    assert.match(output, /\[probe\] summary/);
-    assert.match(output, /session\/update notifications:\s*\d+/);
+    assert.match(output, /\[plan-e2e\] summary/);
+    assert.match(output, /session\/update count/);
   });
 });

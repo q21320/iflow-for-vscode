@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 
 const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const args = ['run', '-s', 'test:unit', '--', '--grep', 'ACP Real CLI Smoke'];
+const args = ['run', '-s', 'test:unit', '--', '--grep', 'ACP Real CLI'];
 
 const child = spawn(npmBin, args, {
   stdio: 'inherit',

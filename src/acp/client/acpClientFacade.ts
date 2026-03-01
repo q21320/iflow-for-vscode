@@ -60,6 +60,9 @@ export class AcpClient {
       (msg) => this.log(msg),
       {
         interactionTimeoutMs: getConfig<number>('interactionTimeoutMs', DEFAULT_INTERACTION_TIMEOUT_MS),
+        enableLegacyQuestionBridge: false,
+        // iflow CLI still emits _iflow/plan/exit in some plan-mode flows.
+        enableLegacyPlanExitBridge: true,
       },
     );
 

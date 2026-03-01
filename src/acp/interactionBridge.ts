@@ -36,6 +36,8 @@ interface PlanParams {
 
 interface InteractionBridgeOptions {
   interactionTimeoutMs?: number;
+  enableLegacyQuestionBridge?: boolean;
+  enableLegacyPlanExitBridge?: boolean;
 }
 
 export class InteractionBridge {
@@ -43,6 +45,8 @@ export class InteractionBridge {
   private readonly timeoutHandles = new Map<number, ReturnType<typeof setTimeout>>();
   private readonly createdAt = new Map<number, number>();
   private readonly interactionTimeoutMs: number;
+  private readonly enableLegacyQuestionBridge: boolean;
+  private readonly enableLegacyPlanExitBridge: boolean;
 
   constructor(
     private readonly emitChunk: (chunk: StreamChunk) => void,
@@ -51,6 +55,8 @@ export class InteractionBridge {
     options: InteractionBridgeOptions = {},
   ) {
     this.interactionTimeoutMs = options.interactionTimeoutMs ?? 120_000;
+    this.enableLegacyQuestionBridge = options.enableLegacyQuestionBridge ?? false;
+    this.enableLegacyPlanExitBridge = options.enableLegacyPlanExitBridge ?? false;
   }
 
   clearPendingInteractions(reason = 'interaction bridge reset'): void {
@@ -106,50 +112,54 @@ export class InteractionBridge {
       },
     );
 
-    protocol.onServerMethod(
-      '_iflow/user/questions',
-      async (id: number, params: unknown) => {
-        const questionParams = (isObject(params) ? params : {}) as QuestionParams;
-        const mappedQuestions = (questionParams.questions ?? []).map((q) => ({
-          question: q.question ?? '',
-          header: q.header ?? 'Question',
-          options: (q.options ?? []).map((opt) => ({
-            label: opt.label ?? '',
-            description: opt.description ?? '',
-          })),
-          multiSelect: q.multiSelect ?? false,
-        }));
+    if (this.enableLegacyQuestionBridge) {
+      protocol.onServerMethod(
+        '_iflow/user/questions',
+        async (id: number, params: unknown) => {
+          const questionParams = (isObject(params) ? params : {}) as QuestionParams;
+          const mappedQuestions = (questionParams.questions ?? []).map((q) => ({
+            question: q.question ?? '',
+            header: q.header ?? 'Question',
+            options: (q.options ?? []).map((opt) => ({
+              label: opt.label ?? '',
+              description: opt.description ?? '',
+            })),
+            multiSelect: q.multiSelect ?? false,
+          }));
 
-        this.emitChunk({
-          chunkType: 'user_question',
-          requestId: id,
-          questions: mappedQuestions,
-        });
+          this.emitChunk({
+            chunkType: 'user_question',
+            requestId: id,
+            questions: mappedQuestions,
+          });
 
-        return new Promise((resolve) => {
-          const pending: PendingQuestion = { kind: 'question', resolve };
-          this.registerPendingInteraction(id, pending);
-        });
-      },
-    );
+          return new Promise((resolve) => {
+            const pending: PendingQuestion = { kind: 'question', resolve };
+            this.registerPendingInteraction(id, pending);
+          });
+        },
+      );
+    }
 
-    protocol.onServerMethod(
-      '_iflow/plan/exit',
-      async (id: number, params: unknown) => {
-        const planParams = (isObject(params) ? params : {}) as PlanParams;
+    if (this.enableLegacyPlanExitBridge) {
+      protocol.onServerMethod(
+        '_iflow/plan/exit',
+        async (id: number, params: unknown) => {
+          const planParams = (isObject(params) ? params : {}) as PlanParams;
 
-        this.emitChunk({
-          chunkType: 'plan_approval',
-          requestId: id,
-          plan: planParams.plan ?? '',
-        });
+          this.emitChunk({
+            chunkType: 'plan_approval',
+            requestId: id,
+            plan: planParams.plan ?? '',
+          });
 
-        return new Promise((resolve) => {
-          const pending: PendingPlan = { kind: 'plan', resolve };
-          this.registerPendingInteraction(id, pending);
-        });
-      },
-    );
+          return new Promise((resolve) => {
+            const pending: PendingPlan = { kind: 'plan', resolve };
+            this.registerPendingInteraction(id, pending);
+          });
+        },
+      );
+    }
 
     protocol.onServerMethod(
       'fs/read_text_file',
@@ -327,7 +337,6 @@ export class InteractionBridge {
       }
     }
 
-    const fallback = options.find((opt) => typeof opt.optionId === 'string' && opt.kind !== 'reject_once' && opt.kind !== 'reject_always');
-    return fallback?.optionId ?? null;
+    return null;
   }
 }

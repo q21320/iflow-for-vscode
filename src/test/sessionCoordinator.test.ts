@@ -270,6 +270,87 @@ suite('SessionCoordinator', () => {
     assert.strictEqual(coordinator.currentSessionId, 'session-loaded-1');
   });
 
+  test('reloads current session when mode changes from plan to execution', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => ({
+        hasProcess: true,
+        currentPort: null,
+        stopManagedProcess: () => {},
+        resolveStartMode: async () => null,
+        startManagedProcess: async () => 8090,
+      }),
+      getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions({ mode: 'plan' }));
+    const activeSessionId = coordinator.currentSessionId;
+    assert.ok(activeSessionId);
+
+    protocol.requests = [];
+    await coordinator.ensureConnected(baseRunOptions({
+      mode: 'smart',
+      sessionId: activeSessionId ?? undefined,
+    }));
+
+    assert.ok(
+      protocol.requests.some((r) => r.method === 'session/load'),
+      'expected session/load to refresh settings after leaving plan mode',
+    );
+
+    const loadRequest = protocol.requests.find((r) => r.method === 'session/load');
+    const settings = (
+      loadRequest?.params as { settings?: Record<string, unknown> } | undefined
+    )?.settings;
+    assert.ok(settings);
+    assert.strictEqual(settings?.permission_mode, 'smart');
+    assert.strictEqual(settings?.append_system_prompt, '');
+  });
+
+  test('creates a fresh session for new conversation on reused connection', async () => {
+    const transport = new FakeTransport();
+    const protocol = new FakeProtocol();
+
+    const coordinator = new SessionCoordinator({
+      createTransport: () => transport as never,
+      createProtocol: () => protocol as never,
+      getProcessManager: () => ({
+        hasProcess: true,
+        currentPort: null,
+        stopManagedProcess: () => {},
+        resolveStartMode: async () => null,
+        startManagedProcess: async () => 8090,
+      }),
+      getConfig: <T>(_key: string, defaultValue: T) => defaultValue,
+      runtimeConfigApplier: new RuntimeConfigApplier(() => {}),
+      interactionBridge: new InteractionBridge(() => {}, (p) => p, () => {}),
+      log: () => {},
+    });
+
+    await coordinator.ensureConnected(baseRunOptions({ mode: 'plan' }));
+
+    protocol.requests = [];
+    await coordinator.ensureConnected(baseRunOptions({ mode: 'default', sessionId: undefined }));
+
+    const newRequest = protocol.requests.find((r) => r.method === 'session/new');
+    assert.ok(newRequest, 'expected session/new for new conversation');
+    assert.ok(!protocol.requests.some((r) => r.method === 'session/load'));
+
+    const settings = (
+      newRequest?.params as { settings?: Record<string, unknown> } | undefined
+    )?.settings;
+    assert.ok(settings);
+    assert.strictEqual(settings?.permission_mode, 'default');
+    assert.strictEqual(settings?.append_system_prompt, '');
+  });
+
   test('reconnects when cwd changes', async () => {
     const transportA = new FakeTransport();
     const transportB = new FakeTransport();

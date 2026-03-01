@@ -55,6 +55,7 @@ export interface AppHost {
   getPendingPlanApproval(): PendingPlanApproval | null;
   clearPendingPlanApproval(): void;
   dismissIDEContext(type: 'activeFile' | 'selection'): void;
+  patchIDEContextChips(): void;
 
   // DOM helpers
   autoSizeSelect(select: HTMLSelectElement): void;
@@ -64,7 +65,7 @@ export interface AppHost {
   // Controller delegates
   slashMenuHandleKeyDown(e: KeyboardEvent): boolean;
   inputCtrlHandleEnterKey(): boolean;
-  inputCtrlHandleEscapeKey(): void;
+  inputCtrlHandleEscapeKey(): boolean;
 }
 
 function closeConversationPanel(host: AppHost): void {
@@ -142,7 +143,7 @@ function attachConversationSearchListeners(host: AppHost): void {
   });
 }
 
-function attachFileChangeReviewListeners(host: AppHost): void {
+export function attachFileChangeReviewListeners(host: AppHost): void {
   document.querySelectorAll('[data-file-change-row="1"]').forEach((node) => {
     const row = node as HTMLElement;
     bindActivation(row, (event) => {
@@ -313,8 +314,10 @@ export function attachComposerListeners(host: AppHost): void {
       return;
     }
     if (event.key === 'Escape') {
-      host.inputCtrlHandleEscapeKey();
-      host.render();
+      const handled = host.inputCtrlHandleEscapeKey();
+      if (handled) {
+        document.getElementById('mention-menu')?.remove();
+      }
     }
   });
 }
@@ -376,7 +379,7 @@ export function attachIDEContextListeners(host: AppHost): void {
         return;
       }
       host.dismissIDEContext(type);
-      host.render();
+      host.patchIDEContextChips();
     });
   });
 }

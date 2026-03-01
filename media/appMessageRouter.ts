@@ -21,6 +21,7 @@ interface AppMessageRouterDeps {
   setPendingPlanApproval: (value: PendingPlanApproval | null) => void;
   inputCtrl: Pick<InputController, 'handlePickedFiles' | 'setWorkspaceFiles' | 'handleFileContents'>;
   render: (smoothScrollToBottom?: boolean) => void;
+  updateRoundFileChanges: () => void;
   updateStreamingContent: () => void;
   updatePendingIndicator: () => void;
   updateIDEContextChips: () => void;
@@ -50,9 +51,8 @@ export class AppMessageRouter {
         if (message.state.isStreaming && wasStreaming) {
           this.deps.updateStreamingContent();
         } else if (!message.state.isStreaming && wasStreaming && !conversationChanged) {
-          // Streaming just ended for the same conversation: patch in place to avoid
-          // a full DOM rebuild/flicker at turn end.
-          this.deps.updateStreamingContent();
+          // Turn completion must fully refresh composer controls (Stop -> Send).
+          this.deps.render();
         } else {
           this.deps.render(conversationChanged);
         }
@@ -85,7 +85,11 @@ export class AppMessageRouter {
           next.set(message.summary.conversationId, message.summary);
         }
         this.deps.setLatestRoundChangesByConversationId(next);
-        this.deps.render();
+
+        const currentConversationId = this.deps.getState()?.currentConversationId ?? null;
+        if (message.summary.conversationId === currentConversationId) {
+          this.deps.updateRoundFileChanges();
+        }
         break;
       }
 
@@ -129,6 +133,16 @@ export class AppMessageRouter {
       case 'streamEnd':
       case 'streamError': {
         const hadPendingPanels = this.hasPendingConfirmation || this.hasPendingQuestion || this.hasPendingPlanApproval;
+        const currentState = this.deps.getState();
+        const wasStreaming = currentState?.isStreaming ?? false;
+        if (currentState && wasStreaming) {
+          // Defensive fallback: a final stateUpdated(false) can be dropped/delayed.
+          // Terminal events must still close the streaming UI immediately.
+          this.deps.setState({
+            ...currentState,
+            isStreaming: false,
+          });
+        }
         this.hasPendingConfirmation = false;
         this.hasPendingQuestion = false;
         this.hasPendingPlanApproval = false;
@@ -136,7 +150,7 @@ export class AppMessageRouter {
         this.deps.setPendingQuestion(null);
         this.deps.setPendingPlanApproval(null);
         this.deps.setStreamStatus(reduceStreamStatus(this.deps.getStreamStatus(), { type: message.type }));
-        if (hadPendingPanels) {
+        if (wasStreaming || hadPendingPanels) {
           this.deps.render();
         }
         break;

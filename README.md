@@ -39,6 +39,7 @@
 - `iflow.port`：IFlow CLI WebSocket 端口（默认 `8090`）。
 - `iflow.timeout`：连接超时（毫秒，默认 `60000`）。
 - `iflow.maxFileBytes`：附件最大文件大小（字节，默认 `80000`）。
+- `iflow.subagentInactivityTimeoutMs`：子代理无活动超时（毫秒，默认 `300000`，即 300 秒；设为 `0` 可关闭）。
 - `iflow.debugLogging`：开启调试日志（默认 `false`）。
 
 ## 使用

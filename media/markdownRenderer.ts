@@ -145,10 +145,23 @@ export function renderMarkdown(text: string): string {
 
     // Paragraph
     const paraLines: string[] = [];
-    while (i < lines.length && lines[i].trim() !== '' && !lines[i].match(/^(#{1,6}\s|```|>\s|[-*+]\s|\d+\.\s|\s*[-*_]\s*[-*_]\s*[-*_])/) && !lines[i].includes('|')) {
+    while (
+      i < lines.length
+      && lines[i].trim() !== ''
+      && !lines[i].match(/^(#{1,6}\s|```|>\s|[-*+]\s|\d+\.\s|\s*[-*_]\s*[-*_]\s*[-*_])/)
+    ) {
       paraLines.push(lines[i]);
       i++;
     }
+
+    // Guard against no-progress loops on partial markdown lines (for example,
+    // a streaming chunk ending with "### " before the heading text arrives).
+    if (paraLines.length === 0) {
+      result.push(`<p>${renderInline(line)}</p>`);
+      i++;
+      continue;
+    }
+
     result.push(`<p>${renderInline(paraLines.join('\n'))}</p>`);
   }
 

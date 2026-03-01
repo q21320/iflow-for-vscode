@@ -8,5 +8,6 @@ export {
 export {
   renderComposer,
   renderIDEContextChips,
+  renderRoundFileChanges,
 } from './renderers/composerRenderer';
 export { getModeLabel } from './renderers/sharedRendererUtils';
