@@ -4,115 +4,153 @@
 
 ## APIs & External Services
 
-**iFlow Platform (iflow.cn):**
-- OAuth 2.0 Authorization Endpoint - Browser-based login (PKCE flow)
-  - URL: `https://iflow.cn/oauth` (constant `OAUTH_AUTH_URL` in `src/authConstants.ts`)
-  - Auth: None (public authorization endpoint)
-- OAuth Token Endpoint - Token exchange and refresh
-  - URL: `https://iflow.cn/oauth/token` (constant `OAUTH_TOKEN_URL` in `src/authConstants.ts`)
-  - Auth: `client_id` + PKCE code verifier (public client, no client secret)
-- User Info Endpoint - Fetches user profile after login
-  - URL: `https://iflow.cn/api/oauth/getUserInfo` (constant `OAUTH_USERINFO_URL` in `src/authConstants.ts`)
-  - Auth: `Authorization: Bearer <access_token>`
-- OpenAI-compatible API (optional override) - LLM API for iFlow CLI
-  - URL: Configurable via `iflow.baseUrl` VS Code setting (e.g. `https://apis.iflow.cn/v1`)
-  - Auth: `apiKey` from OAuth user info, written to `~/.iflow/settings.json`
-  - Implementation: `src/acp/settingsRepository.ts` (`updateBaseUrl` method)
+**iFlow CLI (Self-Hosted):**
+- Service: iFlow command-line interface (spun up as subprocess on demand)
+- What it's used for: AI code completion, tool execution, chat streaming
+- SDK/Client: Custom ACP (WebSocket + JSON-RPC 2.0) implementation
+- Protocol: JSON-RPC 2.0 over WebSocket (`ws://localhost:{port}/acp`)
+- Auth: Multiple auth methods supported via `authenticate` RPC method
+  - `oauth-iflow` (preferred - OAuth 2.0 with PKCE)
+  - `iflow` (API-key authentication)
+  - `openai-compatible` (OpenAI-compatible endpoint)
+  - Custom external auth methods (determined by CLI capability)
 
-**iFlow CLI (local subprocess):**
-- Protocol: Custom ACP (Agent Communication Protocol) = WebSocket + JSON-RPC 2.0
-- Transport: `ws://localhost:{port}/acp` (default port 8090, configurable via `iflow.port`)
-- Launch args: `node {iflowScript} --experimental-acp --port {port} [--stream]`
-- Implementation: `src/acpTransport.ts` (WebSocket), `src/acpProtocol.ts` (JSON-RPC 2.0), `src/processManager.ts` (subprocess lifecycle)
+**OpenAI-Compatible API (Optional):**
+- Service: OpenAI-compatible LLM endpoint (specified via `iflow.baseUrl` setting)
+- What it's used for: Model inference (overrides CLI-configured endpoint if set)
+- Config env var: `iflow.baseUrl` (extension setting, not environment variable)
+- Used in: `RuntimeConfigApplier` (`src/acp/runtimeConfigApplier.ts`)
 
 ## Data Storage
 
 **Databases:**
-- None - No external database used
-
-**Credential Storage:**
-- VS Code `SecretStorage` API (primary) - Stores OAuth credentials as JSON under key `iflow.oauth.credentials.v1`
-  - Implementation: `src/auth/credentialsStore.ts` (`AuthCredentialsStore`)
-- Legacy file fallback - `~/.iflow/oauth_creds.json` (migrated to SecretStorage on first use, then deleted)
-  - Migration: `AuthCredentialsStore.migrateLegacyCredentialsIfNeeded()`
-
-**Settings File:**
-- Local JSON file at `~/.iflow/settings.json` - Stores `apiKey`, `modelName`, `baseUrl`, `selectedAuthType`
-  - Implementation: `src/acp/settingsRepository.ts` (`SettingsRepository`)
-  - Written by: `src/auth/settingsStore.ts` (`AuthSettingsStore`)
-
-**Conversation State:**
-- VS Code `Memento` (globalState) - Persists conversation list and current conversation ID
-  - Implementation: `src/store/conversationRepository.ts` (`ConversationRepository`)
+- None detected. Extension uses VS Code's built-in storage only.
 
 **File Storage:**
-- Local filesystem (workspace files only) - Read for file attachments; max size controlled by `iflow.maxFileBytes` (default 80,000 bytes)
-  - Implementation: `src/webview/workspaceFileService.ts`
+- VS Code Memento (globalState) - Persistent conversation history
+  - No external database required
+  - Stored in VS Code's internal storage (encrypted by platform)
+- Local filesystem (`~/.iflow/settings.json`) - User preferences
+  - Format: JSON
+  - Client: `JsonFileStore` (`src/shared/jsonFileStore.ts`)
+  - Contents: selectedAuthType, modelName, baseUrl
 
 **Caching:**
-- In-memory only (runtime state via `src/store/runtimeStateStore.ts`)
+- In-memory conversation state via `ConversationStore` (`src/store/`)
+- Mtime-based file caching for `~/.iflow/settings.json` to avoid redundant reads
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- iFlow Platform OAuth 2.0 (PKCE public client)
-  - Implementation: `src/auth/pkceFlow.ts`, `src/authService.ts`
-  - Flow: Extension starts local HTTP callback server on random port → opens browser to `iflow.cn/oauth` → receives auth code → exchanges for tokens → fetches user info → stores in SecretStorage
-  - Client ID: `10009311001` (default, configurable via `iflow.oauthClientId`)
-  - Token refresh: Automatic when within 24 hours of expiry (`TOKEN_REFRESH_THRESHOLD_MS = 24 * 60 * 60 * 1000`)
-  - State validation: CSRF protection via random `state` parameter checked in callback
-  - Callback: Local HTTP server on `http://localhost:{random-port}/oauth2callback` (timeout: 2 minutes)
+- Hybrid (multiple supported):
+  - **oauth-iflow** (OAuth 2.0 with PKCE) - Preferred when available
+  - **iflow** (API-key) - Legacy fallback
+  - **openai-compatible** - LLM endpoint auth
+  - Custom external auth (determined by CLI)
+
+**Implementation:**
+- Auth happens through ACP RPC call: `protocol.sendRequest("authenticate", { methodId })`
+- No local credential storage in extension (credentials managed by CLI)
+- Settings repository stores only the selected auth type preference (not secrets)
+- Authentication timeout: `iflow.oauthRequestTimeoutMs` (default 10 seconds)
+
+**OAuth Client Configuration:**
+- Client ID: `iflow.oauthClientId` (default "10009311001")
+- Type: PKCE public client (no client secret)
+- Managed by CLI, not extension
 
 ## Monitoring & Observability
 
 **Error Tracking:**
-- None (no Sentry, Datadog, or similar)
+- None detected. No Sentry, Honeycomb, or similar integration.
 
 **Logs:**
-- VS Code Output Channel named "IFlow" - General extension logs via `src/shared/logger.ts` (`OutputChannelLogger`)
-- VS Code Output Channel named "IFlow Auth" - Auth-specific logs via `src/authService.ts`
-- Debug logging controlled by `iflow.debugLogging` (boolean, default `false`)
-- Debug session-only logging controlled by `iflow.debugSessionUpdateOnly` (boolean)
+- VS Code output channel: "IFlow" channel
+- Logger implementation: `AppLogger` interface (`src/shared/logger.ts`)
+- OutputChannelLogger adapter for VS Code integration
+- Debug logging: Controllable via `iflow.debugLogging` setting
+- Session updates logging: `iflow.debugSessionUpdateOnly` (show only ACP updates)
+
+**Metrics/Usage Tracking:**
+- Token usage extracted from ACP responses (no external tracking)
+- Stored in memory during session (not sent externally)
+- Implementation: `AcpUsageExtractor` (`src/acp/client/acpUsageExtractor.ts`)
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- VS Code Marketplace (published as `.vsix` by `YauMike` publisher)
-- GitHub repository: `https://github.com/xsw632/iflow-for-vscode`
+- VS Code Marketplace (extension distribution)
+- GitHub repository: `https://github.com/xsw632/iflow-for-vscode.git`
 
 **CI Pipeline:**
-- Not detected (no `.github/workflows/` directory in project root)
+- None detected in codebase (likely configured in GitHub Actions, not visible here)
+
+**Build & Package:**
+- `npm run compile` - Development build (webpack)
+- `npm run package` - Production build (webpack with hidden source maps)
+- `npm run vscode:prepublish` - Marketplace preparation
 
 ## Environment Configuration
 
-**Required at runtime:**
-- iFlow CLI installed and discoverable in PATH (or `APPDATA` on Windows)
-- Node.js v22+ available (auto-detected from iflow CLI location, or configured via `iflow.nodePath`)
-- OAuth credentials (acquired via login flow; stored in VS Code SecretStorage)
+**Required Extension Settings:**
+```json
+{
+  "iflow.nodePath": "string | null",           // Node.js v22+ binary path
+  "iflow.baseUrl": "string | null",             // OpenAI-compatible API endpoint override
+  "iflow.oauthClientId": "string",              // Default: "10009311001"
+  "iflow.oauthRequestTimeoutMs": "number",      // Default: 10000 (10 sec)
+  "iflow.port": "number",                       // Default: 8090 (WebSocket server)
+  "iflow.timeout": "number",                    // Default: 60000 (connection timeout)
+  "iflow.enableCliStream": "boolean",           // Default: true (streaming chunks)
+  "iflow.interactionTimeoutMs": "number",       // Default: 120000 (pending interactions)
+  "iflow.maxFileBytes": "number",               // Default: 80000 (attachment size limit)
+  "iflow.autoIncludeWorkspaceFiles": "boolean", // Default: false
+  "iflow.workspaceFilesLimit": "number",        // Default: 80 (max files in context)
+  "iflow.streamRenderIntervalMs": "number",     // Default: 50 (UI refresh cadence)
+  "iflow.debugLogging": "boolean",              // Default: false
+  "iflow.debugSessionUpdateOnly": "boolean",    // Default: false (ACP log filter)
+  "iflow.subagentInactivityTimeoutMs": "number" // Default: 300000 (5 min, 0 to disable)
+}
+```
 
-**VS Code extension settings (iflow.*):**
-- `iflow.nodePath` - Override Node.js executable path
-- `iflow.baseUrl` - Override OpenAI-compatible API base URL
-- `iflow.oauthClientId` - Override OAuth client ID (default: `10009311001`)
-- `iflow.port` - ACP WebSocket port (default: `8090`)
-- `iflow.timeout` - Connection timeout ms (default: `60000`)
-- `iflow.enableCliStream` - Enable `--stream` flag for CLI (default: `true`)
-- `iflow.interactionTimeoutMs` - Permission/question interaction timeout (default: `120000`)
-- `iflow.maxFileBytes` - Max file attachment bytes (default: `80000`)
-- `iflow.subagentInactivityTimeoutMs` - Subagent inactivity cancel timeout (default: `300000`)
-
-**Secrets location:**
-- VS Code `SecretStorage` (encrypted OS keychain via VS Code) — key `iflow.oauth.credentials.v1`
-- `~/.iflow/settings.json` — API key written here for iFlow CLI consumption (plain text)
+**Secrets Location:**
+- No extension-managed secrets detected
+- OAuth tokens and credentials managed entirely by iFlow CLI
+- VS Code's built-in credential storage (via keychain/credential manager) not used by extension
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- Local OAuth callback server on `http://localhost:{random-port}/oauth2callback` — temporary, created during login flow, torn down immediately after receiving auth code
-  - Implementation: `src/authService.ts` (`startCallbackServer` method)
+- None detected. Extension does not expose HTTP endpoints.
 
 **Outgoing:**
-- None (all communication is outbound HTTP/HTTPS requests to iflow.cn)
+- WebSocket bidirectional communication with iFlow CLI
+  - RPC methods sent: `run`, `cancel`, `session/cancel`, `authenticate`
+  - Notifications received: `stream/chunk`, `_iflow/*` (internal CLI events)
+
+## File Change Review System
+
+**Local Integration:**
+- File snapshots captured before/after tool execution
+- Diff generation via `diffService.ts` (`src/webview/fileChange/diffService.ts`)
+- Temporary files created with token-based naming in VS Code's temp directory
+- VS Code's built-in `vscode.diff` command invoked for visual diff display
+
+## Process Management
+
+**CLI Process Lifecycle:**
+- iFlow CLI spawned as child process via Node.js `child_process.spawn`
+- Port auto-discovery: Automatic unused port allocation or user-configured via `iflow.port`
+- Startup signal detection: Monitors stdout for "WebSocket service on port" message
+- Graceful shutdown: Process termination on extension deactivation
+- Force kill timeout: 5 seconds (SIGTERM → SIGKILL)
+
+**Node.js Discovery (Cross-Platform):**
+- Auto-detection from iFlow CLI bin directory
+- NVM, pnpm, Volta, fnm, npm-based installations scanned
+- Windows specific: APPDATA paths, Program Files/nodejs
+- Unix specific: Standard locations (/usr/local/bin, /opt/homebrew/bin, etc.)
+- User override via `iflow.nodePath` setting (v22+ required)
 
 ---
 

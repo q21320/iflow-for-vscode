@@ -6,350 +6,337 @@
 
 ```
 iflow-for-vscode/
-├── src/                        # Extension Host source (Node.js bundle)
-│   ├── extension.ts            # VS Code activate/deactivate entry point
-│   ├── panel.ts                # Independent WebviewPanel host
-│   ├── sidebarProvider.ts      # Sidebar WebviewViewProvider host
-│   ├── webviewHandler.ts       # Shared handler — wires all host-side services
-│   ├── acpClient.ts            # Re-export facade for src/acp/client/
-│   ├── acpProtocol.ts          # JSON-RPC 2.0 protocol multiplexer
-│   ├── acpTransport.ts         # WebSocket transport layer
-│   ├── processManager.ts       # CLI subprocess lifecycle
-│   ├── cliDiscovery.ts         # Cross-platform CLI path resolution
-│   ├── errorUtils.ts           # AppError class and error classification
-│   ├── store.ts                # Re-export facade for src/store/
-│   ├── chunkMapper.ts          # Re-export facade for src/chunkMapper/
-│   ├── protocol.ts             # Re-export facade for src/protocol/
-│   ├── streamStatusUtils.ts    # Stream phase display text helpers
+├── src/                          # Extension Host (Node.js, full VS Code API)
+│   ├── extension.ts              # Main entry point, command registration
+│   ├── panel.ts                  # Independent panel webview container
+│   ├── sidebarProvider.ts        # Sidebar webview view provider
+│   ├── webviewHandler.ts         # Shared webview message handler + HTML builder
 │   │
-│   ├── acp/                    # ACP communication layer
-│   │   ├── client/             #   ACP client — split from single file
-│   │   │   ├── acpClientFacade.ts      # Public API; owns sub-components
-│   │   │   ├── acpRunExecutor.ts       # run/cancel execution logic
-│   │   │   ├── acpNotificationRouter.ts # Notification dispatch + chunk routing
-│   │   │   └── acpUsageExtractor.ts    # Token usage extraction
-│   │   ├── sessionCoordinator.ts       # Connection state machine
-│   │   ├── interactionBridge.ts        # Tool/question/plan pending Promise bridge
-│   │   ├── runtimeConfigApplier.ts     # Session settings sync
-│   │   ├── inactivityGuard.ts          # Subagent inactivity timeout monitor
-│   │   ├── settingsRepository.ts       # Settings file persistence
-│   │   ├── pathPolicy.ts               # Workspace path access control
-│   │   ├── debugLogger.ts              # Debug log adapter
-│   │   └── types.ts                    # ACP-specific types
+│   ├── protocol/                 # Shared type definitions (both bundles)
+│   │   ├── stream.ts             # StreamChunk, OutputBlock, StreamStatusPhase
+│   │   ├── conversation.ts       # Conversation, Message, Model definitions
+│   │   ├── webviewMessages.ts    # WebviewMessage, ExtensionMessage unions
+│   │   ├── fileChange.ts         # RoundFileChange, diff types
+│   │   └── index.ts              # Unified export
 │   │
-│   ├── chunkMapper/            # ACP payload → StreamChunk mapping
-│   │   ├── index.ts            #   ChunkMapper class (coordinator)
-│   │   ├── types.ts            #   Payload interfaces and constants
-│   │   ├── promptBuilder.ts    #   Prompt assembly
-│   │   ├── toolChunkMapper.ts  #   Tool call chunk mapping
-│   │   ├── thinkingChunkMapper.ts # Thinking block chunk mapping
-│   │   └── usageChunkMapper.ts #   Token usage chunk mapping
+│   ├── acp/                      # ACP protocol client + session management
+│   │   ├── client/               # ACP client split modules
+│   │   │   ├── acpClientFacade.ts    # Public API + lifecycle
+│   │   │   ├── acpRunExecutor.ts     # Run/cancel execution
+│   │   │   ├── acpNotificationRouter.ts  # Chunk emission
+│   │   │   └── acpUsageExtractor.ts  # Token usage parsing
+│   │   ├── sessionCoordinator.ts # Connection lifecycle, protocol factory
+│   │   ├── interactionBridge.ts  # Pending Promise coordination
+│   │   ├── debugLogger.ts        # Debug output adapter
+│   │   ├── inactivityGuard.ts    # Subagent timeout monitoring
+│   │   ├── runtimeConfigApplier.ts   # Config sync to CLI
+│   │   ├── settingsRepository.ts # Settings persistence
+│   │   ├── pathPolicy.ts         # Path access control
+│   │   └── types.ts              # ACP-specific types
 │   │
-│   ├── store/                  # Conversation state management
-│   │   ├── conversationRepository.ts   # Persistence (VS Code globalState memento)
-│   │   ├── runtimeStateStore.ts        # Runtime flags (CLI status, streaming)
-│   │   ├── runtimeStateSource.ts       # Runtime state snapshot provider
-│   │   ├── conversationService.ts      # Business commands (add message, append chunk)
-│   │   ├── chunkReducer.ts             # Pure reducer: StreamChunk → Message update
-│   │   ├── conversationMutations.ts    # Immutable conversation update helpers
-│   │   ├── contextUsageEstimator.ts    # Token usage estimation
-│   │   └── storeTypes.ts               # Store-specific types
+│   ├── acpProtocol.ts            # JSON-RPC 2.0 protocol layer
+│   ├── acpTransport.ts           # WebSocket transport
 │   │
-│   ├── auth/                   # Authentication
-│   │   ├── pkceFlow.ts         #   PKCE OAuth 2.0 flow
-│   │   ├── tokenManager.ts     #   Token lifecycle (validate, refresh, clear)
-│   │   ├── credentialsStore.ts #   Credential file persistence
-│   │   ├── settingsStore.ts    #   Auth settings persistence
-│   │   └── types.ts            #   Auth-specific types
+│   ├── chunkMapper/              # ACP payload → StreamChunk transformation
+│   │   ├── index.ts              # ChunkMapper coordinator
+│   │   ├── types.ts              # Payload interfaces
+│   │   ├── promptBuilder.ts      # Prompt assembly
+│   │   ├── toolChunkMapper.ts    # Tool call mapping
+│   │   ├── thinkingChunkMapper.ts    # Thinking block buffering
+│   │   └── usageChunkMapper.ts   # Token usage extraction
 │   │
-│   ├── webview/                # Host-side services for the webview
-│   │   ├── sendMessagePipeline.ts      # Full message send lifecycle
-│   │   ├── messageRouter.ts            # Type-safe webview message dispatch
-│   │   ├── htmlTemplate.ts             # Webview HTML generation
-│   │   ├── cliStatusService.ts         # CLI availability check + caching
-│   │   ├── planModeOrchestrator.ts     # Plan mode state machine
+│   ├── store/                    # Session state (immutable)
+│   │   ├── conversationService.ts    # Command handler + public API
+│   │   ├── conversationRepository.ts # Persistence layer
+│   │   ├── chunkReducer.ts       # Pure: (Message, StreamChunk) → Message
+│   │   ├── conversationMutations.ts  # Immutable update helpers
+│   │   ├── contextUsageEstimator.ts  # Token usage calculation
+│   │   ├── runtimeStateStore.ts  # Streaming/execution state
+│   │   ├── runtimeStateSource.ts # State snapshot provider
+│   │   └── storeTypes.ts         # Store-specific types
+│   │
+│   ├── webview/                  # Webview-facing Host services
+│   │   ├── sendMessagePipeline.ts    # User message flow orchestration
+│   │   ├── fileChangeReviewService.ts  # File diff facade
+│   │   ├── fileChange/           # File change diff subsystem
+│   │   │   ├── types.ts          # Diff types
+│   │   │   ├── snapshotManager.ts    # Snapshot capture
+│   │   │   ├── chunkTracker.ts   # Tool chunk tracking
+│   │   │   └── diffService.ts    # Diff display + rollback
+│   │   ├── messageRouter.ts      # Webview message dispatch
+│   │   ├── htmlTemplate.ts       # Webview HTML generation
+│   │   ├── cliStatusService.ts   # CLI availability checking
+│   │   ├── planModeOrchestrator.ts   # Plan mode state machine
 │   │   ├── planApprovalCoordinator.ts  # Plan approval workflow
-│   │   ├── workspaceFileService.ts     # Workspace file listing + access control
-│   │   ├── ideContextSyncService.ts    # IDE context (active file/selection) sync
-│   │   ├── fileChangeReviewService.ts  # File change review facade
-│   │   └── fileChange/                 # File change review subsystem
-│   │       ├── types.ts                #   Types and constants
-│   │       ├── snapshotManager.ts      #   File snapshot capture
-│   │       ├── chunkTracker.ts         #   Tool chunk tracking
-│   │       └── diffService.ts          #   Diff display and rollback
+│   │   ├── workspaceFileService.ts    # Workspace file enumeration
+│   │   └── ideContextSyncService.ts   # IDE context updates
 │   │
-│   ├── process/                # CLI process helpers
-│   │   ├── portDiscovery.ts    #   Port allocation
-│   │   ├── startupSignals.ts   #   Startup signal parsing
-│   │   └── webSocketReadinessProbe.ts  # WebSocket readiness probe
+│   ├── process/                  # CLI process management
+│   │   ├── portDiscovery.ts      # Port allocation
+│   │   ├── startupSignals.ts     # CLI startup signal parsing
+│   │   └── webSocketReadinessProbe.ts  # WebSocket readiness check
+│   ├── processManager.ts         # Process lifecycle orchestration
+│   ├── cliDiscovery.ts           # Cross-platform CLI path discovery
+│   ├── nodeDiscovery.ts          # Cross-platform Node.js discovery
 │   │
-│   ├── protocol/               # Shared type definitions (both bundles)
-│   │   ├── stream.ts           #   StreamChunk, OutputBlock, StreamStatusPhase
-│   │   ├── conversation.ts     #   Conversation, Message, MODELS, ConversationState
-│   │   ├── webviewMessages.ts  #   WebviewMessage, ExtensionMessage
-│   │   ├── fileChange.ts       #   RoundFileChange, RoundFileChangeSummary
-│   │   └── index.ts            #   Unified export
+│   ├── shared/                   # Cross-cutting utilities
+│   │   ├── logger.ts             # AppLogger interface + OutputChannelLogger
+│   │   ├── typeGuards.ts         # Type narrowing utilities
+│   │   ├── visualUpdateScheduler.ts   # RAF-based update batching
+│   │   ├── jsonFileStore.ts      # JSON file persistence
+│   │   ├── pathUtils.ts          # Path manipulation
+│   │   ├── arrayUtils.ts         # Array utilities
+│   │   ├── questionPanelState.ts # Question panel state machine
+│   │   └── subagentProgressTracker.ts # Subagent progress tracking
 │   │
-│   ├── shared/                 # Cross-cutting infrastructure
-│   │   ├── typeGuards.ts       #   Unified type guards (use this, not inline guards)
-│   │   ├── logger.ts           #   AppLogger interface + OutputChannelLogger
-│   │   ├── errorBoundary.ts    #   ErrorMapper + DefaultErrorMapper
-│   │   ├── visualUpdateScheduler.ts # RAF-based visual update batching
-│   │   ├── subagentProgressTracker.ts # Subagent progress tracking
-│   │   └── questionPanelState.ts      # Question panel state machine (shared)
+│   ├── constants/                # Configuration constants
+│   │   ├── runtime.ts            # Default timeouts, limits
+│   │   └── ui.ts                 # UI thresholds
 │   │
-│   ├── constants/
-│   │   ├── runtime.ts          #   Runtime defaults (timeouts, limits)
-│   │   └── ui.ts               #   UI constants
+│   ├── errorUtils.ts             # AppError + classification
+│   ├── markdownUrlPolicy.ts      # Markdown link validation
+│   ├── streamStatusUtils.ts      # Stream status text formatting
+│   ├── thinkingParser.ts         # Thinking block extraction
 │   │
-│   └── test/                   # Unit and integration tests (co-located with src)
-│       ├── acpClient.test.ts
-│       ├── sessionCoordinator.test.ts
-│       ├── sendMessagePipeline.test.ts
-│       ├── chunkReducer.test.ts
-│       ├── interactionBridge.test.ts
-│       ├── realCliSmoke.test.ts        # Smoke tests against real CLI
-│       ├── realPlanModeSmoke.test.ts
-│       ├── realToolCallSmoke.test.ts
-│       └── [other *.test.ts files]
+│   ├── types/                    # (Legacy directory, minimal use)
+│   │
+│   ├── test/                     # Unit tests
+│   │   ├── *.test.ts             # Test files parallel to src
+│   │   └── fixtures/             # Test data
+│   │
+│   ├── acpClient.ts              # Re-export: acp/client/
+│   ├── chunkMapper.ts            # Re-export: chunkMapper/
+│   ├── protocol.ts               # Re-export: protocol/
+│   └── store.ts                  # Re-export: store/
 │
-├── media/                      # Webview source (browser bundle)
-│   ├── main.ts                 # Webview entry — IFlowApp class
-│   ├── appState.ts             # Application state container
-│   ├── appLifecycle.ts         # Init and message listener setup
-│   ├── appMessageRouter.ts     # Extension message routing (webview side)
-│   ├── appRenderer.ts          # Renderer aggregator module
-│   ├── eventBinder.ts          # DOM event binding
-│   ├── inputController.ts      # Text input management + file attachments
-│   ├── slashMenuController.ts  # Slash command menu
-│   ├── markdownRenderer.ts     # Markdown → HTML rendering
-│   ├── renderCoordinator.ts    # Render scheduling
-│   ├── renderDriver.ts         # String-template render driver
-│   ├── streamingViewUpdater.ts # Streaming content incremental DOM update
-│   ├── fileUtils.ts            # File path utilities
-│   ├── webviewUtils.ts         # Webview layout constants
+├── media/                        # Webview (sandbox, limited access)
+│   ├── main.ts                   # Webview entry, app orchestration
+│   ├── appState.ts               # Mutable app state container
+│   ├── appLifecycle.ts           # Initialization + message setup
+│   ├── appMessageRouter.ts       # Extension message routing
+│   ├── eventBinder.ts            # DOM event binding + delegation
+│   ├── inputController.ts        # Text input state management
+│   ├── slashMenuController.ts    # Slash command menu parser
 │   │
-│   ├── renderers/              # Pure HTML string-template renderers
-│   │   ├── topBarRenderer.ts
-│   │   ├── messageRenderer.ts
-│   │   ├── composerRenderer.ts
-│   │   ├── conversationPanelRenderer.ts
-│   │   ├── sharedRendererUtils.ts
-│   │   ├── toolTypes.ts
-│   │   ├── toolHeadline.ts
-│   │   ├── toolDetailPreview.ts
-│   │   ├── editPreviewRenderer.ts
-│   │   ├── commandPreviewRenderer.ts
-│   │   └── todoPreviewRenderer.ts
+│   ├── renderers/                # HTML generation (no DOM manipulation)
+│   │   ├── messageRenderer.ts    # Chat message list HTML
+│   │   ├── composerRenderer.ts   # Input + IDE context HTML
+│   │   ├── topBarRenderer.ts     # Header controls HTML
+│   │   ├── conversationPanelRenderer.ts  # Conversation list HTML
+│   │   ├── editPreviewRenderer.ts  # File edit diff preview
+│   │   ├── commandPreviewRenderer.ts  # Command output preview
+│   │   ├── todoPreviewRenderer.ts  # Plan/todo preview
+│   │   ├── toolHeadline.ts       # Tool call title generation
+│   │   ├── toolDetailPreview.ts  # Tool input rendering
+│   │   ├── toolTypes.ts          # Tool category definitions
+│   │   └── sharedRendererUtils.ts  # Shared rendering helpers
 │   │
-│   └── panels/                 # Interactive panel controllers
-│       ├── panelControllers.ts         # Unified panel controller export
-│       ├── approvalPanelController.ts  # Tool approval panel
-│       ├── approvalPanelBinder.ts
-│       ├── questionPanelController.ts  # Question panel
-│       ├── questionPanelBinder.ts
-│       ├── questionPanelView.ts
-│       ├── planApprovalPanelController.ts
-│       ├── planApprovalPanelBinder.ts
-│       ├── panelBinders.ts
-│       ├── panelRenderers.ts
-│       ├── panelListenerLifecycle.ts
-│       └── panelTypes.ts
+│   ├── panels/                   # Interaction modal controllers
+│   │   ├── approvalPanelController.ts  # Tool approval modal
+│   │   ├── questionPanelController.ts  # User question modal
+│   │   ├── planApprovalPanelController.ts  # Plan approval modal
+│   │   ├── panelRenderers.ts     # Modal HTML generation
+│   │   ├── panelBinders.ts       # Panel event listeners (legacy alias)
+│   │   ├── panelListenerLifecycle.ts  # Panel setup/teardown
+│   │   ├── panelTypes.ts         # Panel-specific types
+│   │   ├── questionPanelView.ts  # Question modal DOM view
+│   │   ├── questionPanelBinder.ts  # Listener binding
+│   │   ├── approvalPanelBinder.ts  # Listener binding
+│   │   └── planApprovalPanelBinder.ts  # Listener binding
+│   │
+│   ├── markdownRenderer.ts       # Markdown → HTML conversion
+│   ├── renderCoordinator.ts      # Render scheduling + batching
+│   ├── renderDriver.ts           # Template render executor
+│   ├── streamingViewUpdater.ts   # Streaming content DOM updates
+│   ├── fileUtils.ts              # File path utilities
+│   ├── webviewUtils.ts           # UI constants + helpers
+│   │
+│   ├── styles.css                # Main stylesheet
+│   ├── iflow_favicon.svg         # Icon
+│   └── *.png                     # Images
 │
-├── dist/                       # Webpack output (generated, committed for packaging)
-│   ├── extension.js            #   Extension Host bundle
-│   └── webview.js              #   Webview bundle
+├── dist/                         # Compiled output (webpack bundles)
+│   ├── extension.js              # Extension bundle
+│   └── webview.js                # Webview bundle
 │
-├── scripts/                    # Dev/test scripts (Node.js)
-│   ├── iflow-sdk-edit-test.mjs
-│   ├── run-real-cli-unit-test.mjs
-│   ├── plan-mode-e2e-test.mjs
-│   ├── tool-call-e2e-test.mjs
-│   └── _acpProbeShared.mjs
-│
-├── docs/                       # Developer documentation
-├── coverage/                   # Test coverage output
-├── out/                        # TypeScript compiler output (check mode)
-├── package.json                # Extension manifest + npm scripts
-├── webpack.config.js           # Dual bundle config (extension + webview)
-├── tsconfig.json               # Extension Host TS config
-├── tsconfig.webview.json       # Webview TS config
-└── CLAUDE.md                   # Project instructions for AI assistants
+├── node_modules/                 # Dependencies
+├── coverage/                      # Test coverage reports
+├── package.json                  # NPM dependencies + scripts
+├── tsconfig.json                 # TypeScript configuration
+├── webpack.config.js             # Webpack build configuration
+├── .eslintrc.json                # ESLint configuration
+├── CLAUDE.md                      # Project architecture guide
+└── README.md                      # Public documentation
 ```
 
 ## Directory Purposes
 
-**`src/`:**
-- Purpose: Extension Host code — runs in Node.js with full VS Code API access
-- Contains: All `*.ts` source for the extension bundle, plus `src/test/` unit tests
-- Key files: `src/extension.ts` (entry), `src/webviewHandler.ts` (main coordinator), `src/acpClient.ts` (facade re-export)
+**src/** (Extension Host)
+- Purpose: Main extension logic (runs in Node.js, has full VS Code API access)
+- Contains: Protocol implementation, ACP client, state management, process management
+- Key files: `extension.ts` (entry), `webviewHandler.ts` (facade), `webviewHandler.ts` (communication hub)
 
-**`src/acp/`:**
-- Purpose: Full ACP communication stack — no SDK dependency
-- Contains: Session management, interaction bridging, config application, path policy, debug logging
-- Key files: `src/acp/client/acpClientFacade.ts`, `src/acp/sessionCoordinator.ts`, `src/acp/interactionBridge.ts`
+**src/protocol/**
+- Purpose: Shared type definitions for both bundles (included in both webpack bundles)
+- Contains: Message types, conversation models, stream chunk definitions
+- Key files: `index.ts` (unified export)
 
-**`src/store/`:**
-- Purpose: Conversation state management — persistence, business logic, pure state reduction
-- Contains: Repository (persistence), Service (commands), Reducer (pure function), RuntimeStateStore
-- Key files: `src/store/conversationService.ts`, `src/store/chunkReducer.ts`
+**src/acp/**
+- Purpose: ACP (iFlow CLI) communication protocol implementation
+- Contains: WebSocket transport, JSON-RPC layer, session management, interaction coordination
+- Key files: `client/acpClientFacade.ts` (public API), `sessionCoordinator.ts` (lifecycle)
 
-**`src/protocol/`:**
-- Purpose: Shared type definitions imported by BOTH the extension bundle (`src/`) and the webview bundle (`media/`)
-- Contains: Discriminated union types for all stream chunks, output blocks, webview messages, conversation state
-- Key files: `src/protocol/stream.ts`, `src/protocol/webviewMessages.ts`, `src/protocol/conversation.ts`
+**src/chunkMapper/**
+- Purpose: Transform ACP session updates into normalized StreamChunk objects
+- Contains: Stateful mappers (thinking), pure mappers (text/code), prompt builders
+- Key pattern: Coordinator pattern with specialized mappers
 
-**`src/shared/`:**
-- Purpose: Cross-cutting infrastructure used throughout `src/`
-- Contains: Unified type guards, logger interface, error mapper, visual update scheduler
-- Key files: `src/shared/typeGuards.ts`, `src/shared/logger.ts`, `src/shared/errorBoundary.ts`
+**src/store/**
+- Purpose: Immutable session state management and persistence
+- Contains: Pure reducers, batch operation tracking, repository layer
+- Key files: `conversationService.ts` (command handler), `chunkReducer.ts` (pure reducer)
 
-**`src/webview/`:**
-- Purpose: Extension-Host-side services that support the webview (NOT the webview code itself)
-- Contains: Message pipeline, routing, HTML template, workspace file service, plan mode orchestration, file change review
-- Key files: `src/webview/sendMessagePipeline.ts`, `src/webview/messageRouter.ts`
+**src/webview/**
+- Purpose: Host-side services for webview interaction (bridging gap between webview and ACP)
+- Contains: Message pipeline, file diff management, CLI status checking, plan mode orchestration
+- Key files: `sendMessagePipeline.ts` (main data flow), `fileChange/` (subsystem)
 
-**`media/`:**
-- Purpose: Webview source — runs in sandboxed browser context with no direct VS Code API
-- Contains: App entry, state, renderers, event binding, panel controllers
-- Key files: `media/main.ts`, `media/appMessageRouter.ts`, `media/appState.ts`
+**src/process/**
+- Purpose: CLI process lifecycle management
+- Contains: Port discovery, process startup, readiness probing
+- Key files: `processManager.ts` (orchestrator)
 
-**`media/renderers/`:**
-- Purpose: Pure HTML string-template renderers for each UI region; no DOM side-effects
-- Contains: One file per major UI section; return HTML strings for injection via `renderDriver.ts`
+**src/shared/**
+- Purpose: Cross-cutting infrastructure (logging, utilities, type guards)
+- Contains: AppLogger interface, array/path utilities, type guards, scheduling
+- Key files: `logger.ts` (logging), `typeGuards.ts` (type narrowing)
 
-**`media/panels/`:**
-- Purpose: Controllers for interactive overlay panels (tool approval, questions, plan approval)
-- Contains: Controller + binder + view per panel type; `panelTypes.ts` defines shared types
+**media/** (Webview)
+- Purpose: User interface (runs in sandboxed iframe, no direct VS Code API)
+- Contains: Renderers (HTML generation), event binding (user input), state mirroring
+- Key files: `main.ts` (entry), `appState.ts` (state container)
 
-**`src/test/`:**
-- Purpose: Unit and integration tests; co-located with source under `src/`
-- Contains: `*.test.ts` files (one per module tested); smoke tests using real CLI (`realCli*.test.ts`)
+**media/renderers/**
+- Purpose: Convert state to HTML strings (no DOM manipulation)
+- Contains: Message list, composer, previews, modals
+- Key pattern: String template generation, no side effects
+
+**media/panels/**
+- Purpose: Modal dialog controllers (tool approval, user questions, plan approval)
+- Contains: Rendering, event binding, lifecycle management
+- Key files: `panelControllers.ts` (factory), `panelRenderers.ts` (HTML)
+
+**dist/**
+- Purpose: Compiled webpack output
+- Contains: Two bundles (extension.js for host, webview.js for sandbox)
+
+**coverage/**
+- Purpose: Test coverage reports
+- Generated: By `npm run test:coverage`
 
 ## Key File Locations
 
 **Entry Points:**
-- `src/extension.ts`: VS Code `activate()`/`deactivate()`
-- `media/main.ts`: Webview `IFlowApp` bootstrap
+- `src/extension.ts` - Extension activation (VS Code loads)
+- `src/panel.ts` - Panel webview creation
+- `src/sidebarProvider.ts` - Sidebar webview resolution
+- `media/main.ts` - Webview initialization
 
 **Configuration:**
-- `webpack.config.js`: Dual bundle build config
-- `tsconfig.json`: Extension Host TypeScript config
-- `tsconfig.webview.json`: Webview TypeScript config
-- `package.json`: Extension manifest (`contributes`, `activationEvents`, `main`)
+- `src/constants/runtime.ts` - Timeouts, limits, defaults
+- `src/constants/ui.ts` - UI thresholds
+- `package.json` - Dependencies, scripts, build config
 
 **Core Logic:**
-- `src/webviewHandler.ts`: Host-side coordination hub
-- `src/acp/client/acpClientFacade.ts`: ACP client public API
-- `src/acp/sessionCoordinator.ts`: Connection lifecycle state machine
-- `src/acp/interactionBridge.ts`: Server-initiated request bridging
-- `src/webview/sendMessagePipeline.ts`: Message send + stream lifecycle
-- `src/store/conversationService.ts`: Conversation business commands
-- `src/store/chunkReducer.ts`: Pure state reducer
-
-**Shared Types:**
-- `src/protocol/stream.ts`: `StreamChunk`, `OutputBlock` union types
-- `src/protocol/webviewMessages.ts`: `WebviewMessage`, `ExtensionMessage` union types
-- `src/protocol/conversation.ts`: `Conversation`, `Message`, `ConversationState`
-
-**Error Handling:**
-- `src/errorUtils.ts`: `AppError`, `toAppError()`, `classifyAppErrorCode()`
-- `src/shared/errorBoundary.ts`: `ErrorMapper`, `DefaultErrorMapper`
+- `src/acp/client/acpClientFacade.ts` - Run execution, interaction handling
+- `src/webview/sendMessagePipeline.ts` - Message processing flow
+- `src/store/conversationService.ts` - State command handler
+- `src/store/chunkReducer.ts` - State updates
 
 **Testing:**
-- `src/test/*.test.ts`: All unit tests
-- `src/test/realCli*.test.ts`: Smoke tests requiring a live CLI
+- `src/test/*.test.ts` - Test files (co-located with source)
 
 ## Naming Conventions
 
 **Files:**
-- `camelCase.ts` for all TypeScript files (e.g., `sessionCoordinator.ts`, `chunkReducer.ts`)
-- `*.test.ts` suffix for test files (e.g., `sessionCoordinator.test.ts`)
-- `index.ts` for module barrel/facade files within subdirectories
+- `*Service.ts` - Stateful service class (conversationService, cliStatusService)
+- `*Controller.ts` - Input/interaction controller (inputController, panelControllers)
+- `*Router.ts` - Message/event routing (appMessageRouter, acpNotificationRouter)
+- `*Coordinator.ts` - Orchestration of multiple subsystems (sessionCoordinator, planApprovalCoordinator)
+- `*Executor.ts` - Execution of a specific operation (acpRunExecutor)
+- `*Provider.ts` - VS Code WebviewViewProvider or data provider
+- `*Handler.ts` - Event/request handler
+- `*Reducer.ts` - Pure function transforming state (chunkReducer)
+- `*Manager.ts` - Lifecycle management (processManager)
+- `*Repository.ts` - Data access abstraction (conversationRepository)
+- `*Extractor.ts` - Data extraction/parsing (acpUsageExtractor)
+- `*Utils.ts` - Utility functions (errorUtils, pathUtils)
+- `*Bridge.ts` - Adapter between subsystems (interactionBridge)
+- `*Policy.ts` - Policy/validation enforcement (pathPolicy)
 
-**Classes:**
-- `PascalCase` (e.g., `AcpClient`, `SessionCoordinator`, `ConversationService`, `InteractionBridge`)
-
-**Interfaces / Types:**
-- `PascalCase` for exported types (e.g., `StreamChunk`, `WebviewMessage`, `AppError`)
-- `PascalCase + Deps` suffix for dependency injection objects (e.g., `WebviewHandlerDeps`, `SessionCoordinatorDependencies`)
-
-**Functions:**
-- `camelCase` for all functions (e.g., `applyChunkToMessage`, `routeWebviewMessage`, `toAppError`)
-
-**Constants:**
-- `SCREAMING_SNAKE_CASE` for module-level constants (e.g., `DEFAULT_STREAM_RENDER_INTERVAL_MS`, `CLI_VERSION_TIMEOUT_MS`)
-
-**Re-export Facades:**
-- Original single-file path retained as a one-line re-export after splitting to subdirectory
-- Examples: `src/acpClient.ts` re-exports from `src/acp/client/`, `src/store.ts` re-exports from `src/store/`, `src/chunkMapper.ts` re-exports from `src/chunkMapper/`
+**Directories:**
+- `acp/` - ACP (iFlow CLI) communication
+- `chunkMapper/` - Chunk mapping and transformation
+- `store/` - State management (immutable)
+- `webview/` - Webview-related host services
+- `process/` - Process management
+- `shared/` - Cross-cutting utilities
+- `protocol/` - Type definitions
+- `constants/` - Configuration constants
+- `renderers/` - HTML rendering
+- `panels/` - Modal controllers
+- `test/` - Test files
 
 ## Where to Add New Code
 
-**New ACP Protocol Feature:**
-- Protocol/session logic: `src/acp/sessionCoordinator.ts`
-- New server-method handler: `src/acp/interactionBridge.ts` → `registerServerHandlers()`
-- New ACP payload → chunk mapping: `src/chunkMapper/` (add new file or extend `index.ts`)
-- New chunk type: `src/protocol/stream.ts` (union), then `src/store/chunkReducer.ts` (reducer case)
+**New Feature (User-Facing):**
+- Primary code: Create in `src/` under appropriate subsystem (acp, webview, store)
+- Webview UI: Add renderer in `media/renderers/` + event binding in `media/eventBinder.ts`
+- Tests: Parallel to implementation file with `.test.ts` suffix
+- Types: Add to `src/protocol/` if shared, else co-locate with implementation
 
-**New Webview Message Type:**
-- Type definition: `src/protocol/webviewMessages.ts` (add to `WebviewMessage` or `ExtensionMessage` union)
-- Host-side handler: `src/webview/messageRouter.ts` (add handler key), `src/webviewHandler.ts` (implement)
-- Webview-side handler: `media/appMessageRouter.ts`
+**New Tool/Command Integration:**
+- Interaction handling: Add to `src/acp/interactionBridge.ts` request types
+- Chunk mapping: Add case to `src/chunkMapper/` appropriate mapper
+- Rendering: Add to `media/renderers/toolDetailPreview.ts` or new file
+- Error classification: Add pattern to `src/errorUtils.ts` `classifyAppErrorCode()`
 
-**New Host-Side Service:**
-- Create file in `src/webview/` (e.g., `src/webview/myService.ts`)
-- Inject into `WebviewHandler` constructor in `src/webviewHandler.ts`
-- File size target: under 500 lines; split if larger
+**New Service/Module:**
+- Location pattern: `src/[subsystem]/[name]Service.ts`
+- Export: Add to `src/acp/client/acpClientFacade.ts` if it's a public API
+- Logging: Inject logger via constructor dependency
+- Error handling: Use `toAppError()` for categorization
 
-**New Webview UI Component:**
-- Renderer: `media/renderers/myComponentRenderer.ts` (returns HTML string)
-- Panel controller (if interactive): `media/panels/myPanelController.ts` + binder
-- Event binding: `media/eventBinder.ts`
+**Utilities:**
+- Shared: `src/shared/` (array, path, type guards)
+- Subsystem-specific: Co-locate with subsystem
+- Webview utilities: `media/` only if not reusable in host
 
-**New Store Operation:**
-- Business command: `src/store/conversationService.ts`
-- Immutable helper: `src/store/conversationMutations.ts`
-- Public facade method: `src/store.ts` (or the `ConversationStore` class in `src/store/`)
-
-**New Test:**
-- Co-locate at `src/test/<moduleName>.test.ts`
-- Real CLI smoke test: `src/test/realCli<feature>Smoke.test.ts`
-
-**Shared Constants:**
-- Runtime defaults (timeouts, limits): `src/constants/runtime.ts`
-- UI layout constants: `src/constants/ui.ts`
-- Webview layout constants: `media/webviewUtils.ts`
-
-**New Type Guard:**
-- Add to `src/shared/typeGuards.ts` — do NOT define inline type guards in individual files
+**Test:**
+- Co-locate: `src/module/name.ts` → `src/module/name.test.ts`
+- Fixtures: `src/test/fixtures/` for shared test data
+- Mocks: Create inline or in `src/test/mocks/` if reused
 
 ## Special Directories
 
-**`dist/`:**
-- Purpose: Webpack output — `extension.js` and `webview.js`
-- Generated: Yes (by `npm run compile`)
-- Committed: Yes (required for VS Code extension packaging)
+**src/types/**
+- Purpose: Legacy directory (mostly unused post-refactoring)
+- Status: Minimal new code should go here; prefer distributed types
 
-**`out/`:**
-- Purpose: TypeScript compiler output for type-checking only
-- Generated: Yes
-- Committed: No
+**dist/**
+- Purpose: Webpack build output
+- Generated: By `npm run compile`
+- Committed: Yes (required for VS Code marketplace)
 
-**`coverage/`:**
-- Purpose: Jest coverage reports (HTML, lcov, JSON)
-- Generated: Yes (by `npm run test:coverage`)
-- Committed: No (only `coverage-summary.json` appears tracked)
+**coverage/**
+- Purpose: Test coverage reports
+- Generated: By `npm run test:coverage`
+- Committed: Partially (summary only, tmp files ignored)
 
-**`src/test/`:**
-- Purpose: All unit and integration tests
-- Generated: No
-- Committed: Yes
-
-**`scripts/`:**
-- Purpose: Developer scripts for real-CLI testing and ACP probing
-- Generated: No
-- Committed: Yes
+**node_modules/**
+- Purpose: Installed dependencies
+- Generated: By `npm install`
+- Committed: No (.gitignore)
 
 ---
 

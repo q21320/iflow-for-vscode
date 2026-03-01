@@ -4,240 +4,304 @@
 
 ## Pattern Overview
 
-**Overall:** Dual-Bundle VS Code Extension with Custom ACP Communication Stack
+**Overall:** Dual-bundle event-driven architecture with layered message-passing pipeline.
 
 **Key Characteristics:**
-- Two webpack bundles: `dist/extension.js` (Node.js/Extension Host) and `dist/webview.js` (browser/sandboxed iframe)
-- No SDK dependency — ACP protocol implemented directly via WebSocket + JSON-RPC 2.0
-- Typed message envelopes via `src/protocol/` shared between both bundles
-- Layered dependency injection with interface-based deps objects throughout
-- Immutable state updates — all state mutations produce new objects (chunkReducer, conversationMutations, store)
+- Two independent webpack bundles (Extension Host + Webview sandbox) communicating via `postMessage`
+- WebSocket + JSON-RPC 2.0 transport to iFlow CLI (no SDK dependency)
+- Immutable state management with pure function reducers
+- Factory pattern for ACP client dependencies with composition-based layers
 
 ## Layers
 
-**Extension Entry (VS Code Shell):**
-- Purpose: Register commands and webview providers with VS Code
-- Location: `src/extension.ts`
-- Contains: `activate()`, `deactivate()`, command registration
-- Depends on: `src/panel.ts`, `src/sidebarProvider.ts`
-- Used by: VS Code runtime
-
-**Webview Shell (Panel/Sidebar):**
-- Purpose: Create and own the VS Code webview panel/sidebar instance; delegate all logic to WebviewHandler
-- Location: `src/panel.ts`, `src/sidebarProvider.ts`
-- Contains: VS Code webview lifecycle (create, dispose, reveal)
-- Depends on: `src/webviewHandler.ts`
-- Used by: `src/extension.ts`
-
-**WebviewHandler (Thin Facade):**
-- Purpose: Shared message processing hub used by both Panel and Sidebar; wires together all host-side services
-- Location: `src/webviewHandler.ts`
-- Contains: Service construction, VS Code API abstraction (`WebviewHandlerDeps` interface), message dispatch
-- Depends on: All host-side services (store, AcpClient, pipeline services)
-- Used by: `src/panel.ts`, `src/sidebarProvider.ts`
-
-**Message Routing (Host Side):**
-- Purpose: Type-safe dispatch of incoming webview messages to handler functions
-- Location: `src/webview/messageRouter.ts`
-- Contains: `routeWebviewMessage()` — discriminated union dispatch
-- Depends on: `src/protocol/webviewMessages.ts`
-- Used by: `src/webviewHandler.ts`
-
-**Send Message Pipeline:**
-- Purpose: Orchestrates the full lifecycle of sending a user message and handling the streaming response
-- Location: `src/webview/sendMessagePipeline.ts`
-- Contains: Queue management, streaming state coordination, plan approval followup, performance logging
-- Depends on: `ConversationStore`, `AcpClient`, `PlanApprovalCoordinator`
-- Used by: `src/webviewHandler.ts`
-
-**ACP Client Facade:**
-- Purpose: Public API surface for the ACP communication layer; owns sub-components
-- Location: `src/acp/client/acpClientFacade.ts` (re-exported as `src/acpClient.ts`)
-- Contains: `AcpClient` class — orchestrates SessionCoordinator, RunExecutor, NotificationRouter, UsageExtractor
-- Depends on: All `src/acp/` sub-modules
-- Used by: `src/webviewHandler.ts`, `src/webview/sendMessagePipeline.ts`
-
-**Session Coordinator:**
-- Purpose: Manages the connection lifecycle — process launch, WebSocket connect, initialize/authenticate, session create/load
-- Location: `src/acp/sessionCoordinator.ts`
-- Contains: State machine with statuses: `disconnected → connecting → initializing → ready → disposed`
-- Depends on: `AcpTransport`, `AcpProtocol`, `ProcessManager`, `RuntimeConfigApplier`, `InteractionBridge`
-- Used by: `src/acp/client/acpClientFacade.ts`
-
-**ACP Protocol Layer:**
-- Purpose: JSON-RPC 2.0 client/server multiplexer over a transport
-- Location: `src/acpProtocol.ts`
-- Contains: Request/response correlation, server-method handlers, notification handlers, receive loop
-- Depends on: `src/acpTransport.ts`
-- Used by: `src/acp/sessionCoordinator.ts`
-
-**ACP Transport Layer:**
-- Purpose: Raw WebSocket framing — send/receive string messages
+**Transport Layer (WebSocket):**
 - Location: `src/acpTransport.ts`
-- Contains: WebSocket connect/disconnect, buffered message queue for async receive
-- Depends on: Node.js `ws` package
-- Used by: `src/acpProtocol.ts`
+- Purpose: Raw WebSocket connection and message serialization/deserialization
+- Contains: `AcpTransport` class with send/receive operations
+- Depends on: Node.js `net` and WebSocket libs
+- Used by: `AcpProtocol`
 
-**Interaction Bridge:**
-- Purpose: Bridges server-initiated requests (tool approval, questions, plan approval, fs operations) to pending Promise resolutions
-- Location: `src/acp/interactionBridge.ts`
-- Contains: `registerServerHandlers()` wires JSON-RPC server methods; approval/answer methods resolve pending Promises; timeout auto-cancels stale requests
-- Depends on: `src/acpProtocol.ts`, `src/acp/pathPolicy.ts`
-- Used by: `src/acp/client/acpClientFacade.ts`, `src/acp/sessionCoordinator.ts`
+**Protocol Layer (JSON-RPC 2.0):**
+- Location: `src/acpProtocol.ts`
+- Purpose: Request/response correlation, method dispatch, notification routing
+- Contains: `AcpProtocol` with request handlers, notification handlers, pending request tracking
+- Depends on: `AcpTransport`
+- Used by: `SessionCoordinator`, `AcpClient`
 
-**Chunk Mapper:**
-- Purpose: Translates raw ACP notification payloads into typed `StreamChunk` objects
-- Location: `src/chunkMapper/index.ts` (re-exported as `src/chunkMapper.ts`)
-- Contains: `ChunkMapper` class dispatching to `toolChunkMapper`, `thinkingChunkMapper`, `usageChunkMapper`, `promptBuilder`
-- Depends on: `src/protocol/stream.ts`
-- Used by: `src/acp/client/acpNotificationRouter.ts`
+**Session & Connection Layer:**
+- Location: `src/acp/sessionCoordinator.ts`
+- Purpose: Connection lifecycle management, protocol instantiation, connection state snapshots
+- Contains: Process startup orchestration, reconnection logic, state broadcasting
+- Depends on: `AcpProtocol`, `ProcessManager`, config resolution
+- Used by: `AcpClient`
 
-**Conversation Store:**
-- Purpose: Unified public facade over persisted conversation state + runtime state; notifies webview on change
-- Location: `src/store/` (facade at `src/store.ts`)
-- Contains: `ConversationStore` → delegates to `ConversationService` (business logic) + `RuntimeStateStore` (runtime flags) + `ConversationRepository` (persistence via VS Code globalState memento)
-- Depends on: `src/store/chunkReducer.ts`, `src/store/conversationMutations.ts`
-- Used by: `src/webviewHandler.ts`, `src/webview/sendMessagePipeline.ts`
+**ACP Client Layer:**
+- Location: `src/acp/client/acpClientFacade.ts` (main) + split modules:
+  - `acpRunExecutor.ts` - Run command execution and cancellation
+  - `acpNotificationRouter.ts` - Chunk routing and emission
+  - `acpUsageExtractor.ts` - Token usage extraction from payloads
+- Purpose: High-level CLI interaction API (run commands, manage interactions)
+- Contains: Facade pattern coordinating run lifecycle, interaction bridging, state management
+- Depends on: `SessionCoordinator`, `InteractionBridge`, `ChunkMapper`
+- Used by: `SendMessagePipeline`, `WebviewHandler`
 
-**Chunk Reducer:**
-- Purpose: Pure function — applies a `StreamChunk` to an immutable `Message`, producing a new `Message`
-- Location: `src/store/chunkReducer.ts`
-- Contains: `applyChunkToMessage(message, chunk): Message` — handles all chunk types
-- Depends on: `src/protocol/stream.ts`, `src/protocol/conversation.ts`
-- Used by: `src/store/conversationService.ts`
+**Chunk Mapping Layer:**
+- Location: `src/chunkMapper/` (directory with coordinator):
+  - `index.ts` - `ChunkMapper` coordinator
+  - `types.ts` - ACP payload types
+  - `promptBuilder.ts` - Prompt assembly
+  - `toolChunkMapper.ts` - Tool call mapping
+  - `thinkingChunkMapper.ts` - Thinking block buffering
+  - `usageChunkMapper.ts` - Token usage extraction
+- Purpose: Transform ACP session update payloads into normalized `StreamChunk` objects
+- Contains: Stateful mappers (thinking buffering) and pure mappers
+- Depends on: Protocol types
+- Used by: `AcpClient`, `SendMessagePipeline`
 
-**Process Manager:**
-- Purpose: Spawns and monitors the iFlow CLI child process; detects available port
-- Location: `src/processManager.ts`
-- Contains: Auto-detect CLI path, spawn subprocess, wait for WebSocket readiness, port discovery
-- Depends on: `src/cliDiscovery.ts`, `src/process/portDiscovery.ts`, `src/process/startupSignals.ts`, `src/process/webSocketReadinessProbe.ts`
-- Used by: `src/acp/sessionCoordinator.ts`
+**Store/State Layer:**
+- Location: `src/store/` directory:
+  - `conversationService.ts` - Command handler for state mutations
+  - `chunkReducer.ts` - Pure function: `(Message, StreamChunk) -> Message`
+  - `conversationRepository.ts` - Load/save to global state
+  - `contextUsageEstimator.ts` - Token usage calculation
+  - `conversationMutations.ts` - Immutable update helpers
+  - `runtimeStateStore.ts` - Streaming/execution state
+- Purpose: Immutable session state management and persistence
+- Contains: Pure reducers, batch operation tracking, title derivation
+- Depends on: Protocol types
+- Used by: `SendMessagePipeline`, `WebviewHandler`, Webview app
 
-**Webview (media/) — Main App:**
-- Purpose: Entry point for the sandboxed webview; orchestrates UI state, rendering, and VS Code API bridge
-- Location: `media/main.ts`
-- Contains: `IFlowApp` class — owns `AppState`, `AppMessageRouter`, `VisualUpdateScheduler`, `InputController`, `SlashMenuController`
-- Depends on: All `media/` modules, shared types from `src/protocol/`
-- Used by: VS Code webview iframe (loaded via `dist/webview.js`)
+**Message Pipeline Layer:**
+- Location: `src/webview/sendMessagePipeline.ts`
+- Purpose: Orchestrate user message flow through validation, context building, run execution, chunk collection
+- Contains: Workspace file caching, streaming interval management, error recovery logic
+- Depends on: `AcpClient`, `ConversationStore`, `PlanApprovalCoordinator`, interaction bridge
+- Used by: `WebviewHandler`
 
-**App Message Router (Webview):**
-- Purpose: Routes `ExtensionMessage` events from the extension host to UI state mutations and render schedules
-- Location: `media/appMessageRouter.ts`
-- Contains: `AppMessageRouter.handle()` — handles `stateUpdated`, `streamChunk`, `streamEnd`, `streamError`, `ideContextChanged`, `roundFileChanges`, etc.
-- Depends on: `media/appState.ts`, panel controllers
+**Webview Handler (Facade):**
+- Location: `src/webviewHandler.ts`
+- Purpose: Thin adapter between VS Code webview API and internal systems
+- Contains: Message routing, HTML generation, CLI status checking
+- Depends on: All upper layers (store, client, pipeline)
+- Used by: `IFlowPanel`, `IFlowSidebarProvider`
+
+**Webview Renderer Layer (media/):**
+- Location: `media/renderers/` directory:
+  - `messageRenderer.ts` - Chat message list
+  - `composerRenderer.ts` - Input + context chips
+  - `topBarRenderer.ts` - Header controls
+  - `conversationPanelRenderer.ts` - Session sidebar
+  - `editPreviewRenderer.ts` - File diff previews
+  - Tool-specific renderers (command, todo, etc)
+- Purpose: Convert state to HTML strings
+- Contains: Template strings, no DOM manipulation
+- Used by: `media/main.ts` render coordinator
+
+**Webview Event Binding Layer:**
+- Location: `media/eventBinder.ts`, `media/inputController.ts`, `media/slashMenuController.ts`
+- Purpose: Attach DOM listeners and coordinate user interactions
+- Contains: Event delegation, text input state, slash menu parsing
 - Used by: `media/main.ts`
 
-**Renderers (Webview):**
-- Purpose: Pure string-template HTML renderers for each UI region
-- Location: `media/renderers/`
-- Contains: `messageRenderer.ts`, `composerRenderer.ts`, `topBarRenderer.ts`, `conversationPanelRenderer.ts`, tool preview renderers
-- Depends on: `src/protocol/` types
-- Used by: `media/main.ts` (via `media/appRenderer.ts`)
-
-**Panel Controllers (Webview):**
-- Purpose: Manage interactive approval/question/plan panels within the webview
-- Location: `media/panels/`
-- Contains: `approvalPanelController.ts`, `questionPanelController.ts`, `planApprovalPanelController.ts`
-- Depends on: `media/panels/panelTypes.ts`, `media/panels/panelRenderers.ts`
-- Used by: `media/appMessageRouter.ts`, `media/eventBinder.ts`
+**Interaction Bridge (Async Flow Control):**
+- Location: `src/acp/interactionBridge.ts`
+- Purpose: Pending Promise coordination for tool confirmations, user questions, plan approvals
+- Contains: Request tracking, timeout management, response delivery
+- Depends on: Protocol types
+- Used by: `AcpClient`, `SendMessagePipeline`
 
 ## Data Flow
 
-**User Message → CLI → Streamed Response:**
+**Main User Message → CLI → Webview Render Loop:**
 
-1. User types in webview textarea → `IFlowApp.sendMessage()` in `media/main.ts`
-2. `vscode.postMessage({ type: 'sendMessage', ... })` crosses the webview boundary
-3. `WebviewHandler.handleMessage()` in `src/webviewHandler.ts` receives it
-4. `routeWebviewMessage()` dispatches to `handleSendMessage()`
-5. `SendMessagePipeline.execute()` in `src/webview/sendMessagePipeline.ts`:
-   - Adds user message to store; creates pending assistant message
-   - Calls `AcpClient.run()` with conversation options
-6. `AcpClient.run()` → `AcpRunExecutor.run()`:
-   - Calls `SessionCoordinator.ensureConnected()` — starts CLI process if needed, connects WebSocket, initializes session
-   - Sends `session/run` JSON-RPC request via `AcpProtocol`
-7. Server notifications arrive → `AcpNotificationRouter` → `ChunkMapper` → typed `StreamChunk`
-8. `StreamChunk` flows via `onChunk` callback → `ConversationStore.appendToAssistantMessage()` → `applyChunkToMessage()` (pure reducer)
-9. `postMessage({ type: 'streamChunk', chunk })` sent to webview
-10. `AppMessageRouter.handle()` in webview receives `streamChunk` → schedules DOM update via `VisualUpdateScheduler`
-11. `streamingViewUpdater.ts` applies incremental DOM patches for performance
-12. On `streamEnd`, store finalizes message, webview renders complete state
+```
+1. User input (media/main.ts)
+   ↓
+2. postMessage('sendMessage') → extension host
+   ↓
+3. WebviewHandler receives message
+   ↓
+4. SendMessagePipeline.execute()
+   ├─ Validate + build prompt (ChunkMapper)
+   ├─ Add IDE context + attached files
+   └─ AcpClient.run(command, session)
+   ↓
+5. SessionCoordinator.startRun()
+   ├─ Start CLI process if needed (ProcessManager)
+   ├─ Create WebSocket connection
+   └─ Create AcpProtocol instance
+   ↓
+6. AcpClient sends run request via AcpProtocol
+   ↓
+7. CLI streams SessionUpdate payloads
+   ↓
+8. AcpProtocol notifies AcpNotificationRouter
+   ↓
+9. AcpNotificationRouter.routeStreamChunk()
+   ├─ ChunkMapper transforms payload → StreamChunk[]
+   ├─ ConversationService.appendChunk() (pure reduce)
+   └─ postMessage('streamChunk') to webview
+   ↓
+10. Webview main.ts receives message
+    ├─ AppState.update(chunk)
+    ├─ VisualUpdateScheduler batches DOM updates
+    └─ Renderer update → display
 
-**Interaction (Tool Approval) Flow:**
-
-1. CLI sends `session/request_permission` server-initiated JSON-RPC request
-2. `InteractionBridge.registerServerHandlers()` handler fires → emits `tool_confirmation` StreamChunk
-3. Webview receives `streamChunk` → `AppMessageRouter` sets `pendingConfirmation` in `AppState`
-4. `composerRenderer.ts` renders approval panel
-5. User approves/rejects → webview posts `{ type: 'toolApproval', requestId, outcome }`
-6. `WebviewHandler` routes to `AcpClient.approveToolCall()` / `rejectToolCall()`
-7. `InteractionBridge` resolves the pending Promise with approval result
-8. `AcpProtocol.sendResult()` responds to the server-initiated request
+END of stream:
+11. AcpClient finishes, resolves run Promise
+12. SendMessagePipeline.finalize()
+    ├─ Clear streaming status
+    └─ postMessage('streamEnd')
+```
 
 **State Management:**
 
-- Extension host owns authoritative state in `ConversationStore`
-- On every state change, `ConversationStore` calls `postMessage({ type: 'stateUpdated', state })`
-- Webview `AppState` holds a local copy of `ConversationState` received via `stateUpdated`
-- During streaming, individual `streamChunk` messages bypass full state sync for performance; full state sync happens on `streamEnd`
-- All mutations produce new objects — `chunkReducer.ts` returns new `Message`, `conversationMutations.ts` returns new `PersistedConversationState`
+- **Extension Host:** `ConversationService` holds mutable `PersistedConversationState`
+  - Persisted to `globalState` via `ConversationRepository`
+  - Pure reducer `applyChunkToMessage()` applied to current message
+  - Batch mutations tracked via `batchDepth` to defer persistence
+
+- **Webview:** `AppState` mirrors state received from host
+  - Updated via `stateUpdated` extension message
+  - No persistence (state source of truth is host)
+  - Incremental updates only (never full refresh)
+
+**Error Handling Chain:**
+
+```
+CLI error → AcpProtocol receives error notification
+         → AcpNotificationRouter emits error chunk
+         → AppError classification in errorUtils.ts
+         → postMessage('streamError') with normalized message
+         → Webview displays user-friendly error
+```
 
 ## Key Abstractions
 
-**StreamChunk (Discriminated Union):**
-- Purpose: Typed representation of every incremental output unit from the CLI
-- Definition: `src/protocol/stream.ts`
-- Pattern: `{ chunkType: 'text' | 'tool_start' | 'tool_end' | 'thinking_start' | 'plan_approval' | ... }`
+**StreamChunk (Union Type):**
+- Purpose: Normalized representation of CLI streaming output
+- Examples: `{chunkType: 'text', content}`, `{chunkType: 'tool_start', name, input}`, `{chunkType: 'usage', promptTokens}`
+- Pattern: Discriminated union (exhaustive pattern matching in switch statements)
 
-**ExtensionMessage / WebviewMessage (Typed Envelopes):**
-- Purpose: All cross-boundary messages between extension host and webview
-- Definition: `src/protocol/webviewMessages.ts`
-- Pattern: Discriminated unions dispatched by `type` field; `routeWebviewMessage()` on host side, `AppMessageRouter` on webview side
+**OutputBlock (Union Type):**
+- Purpose: Rendered representation in messages (more complete than StreamChunk)
+- Relation: `chunkReducer` transforms chunks into blocks (accumulates tool output, thinking content)
+- Examples: `{type: 'code', language, content}`, `{type: 'tool', name, input, output, status}`
 
-**AppError (Typed Error):**
-- Purpose: Unified error classification across the ACP stack
-- Definition: `src/errorUtils.ts`
-- Pattern: `AppError` with `code: AppErrorCode` — `UNKNOWN | MISSING_SESSION | CLI_UNAVAILABLE | VALIDATION_FAILED | JSON_RPC_ERROR | IO_ERROR | SECURITY_DENIED | TIMEOUT`
+**Conversation:**
+- Purpose: Container for a session with a model
+- Fields: `id`, `title`, `messages[]`, `mode` (default/yolo/plan), `model`, `sessionId`, `workspaceFolderUri`
+- Immutable updates via `updateConversationById()` in `conversationMutations.ts`
 
-**Dependency Injection via Deps Objects:**
-- Purpose: All major classes accept a typed `deps` or named-parameter object instead of concrete dependencies
-- Examples: `WebviewHandlerDeps` in `src/webviewHandler.ts`, `SessionCoordinatorDependencies` in `src/acp/sessionCoordinator.ts`, `SendMessagePipelineDependencies` in `src/webview/sendMessagePipeline.ts`
-- Pattern: Enables testing via mock deps without subclassing or monkey-patching
+**Message:**
+- Purpose: Single turn in conversation
+- Fields: `id`, `role` (user/assistant), `content`, `blocks[]`, `attachedFiles[]`, `streaming`
+- Immutable: blocks are copied before modification in `applyChunkToMessage()`
+
+**AppError:**
+- Purpose: Categorized error representation
+- Location: `src/errorUtils.ts`
+- Pattern: Code classification (UNKNOWN, CLI_UNAVAILABLE, VALIDATION_FAILED, TIMEOUT, etc)
+- Usage: Guide user recovery actions
+
+**ConnectionSnapshot:**
+- Purpose: Immutable view of connection state
+- Contains: `status`, `isConnected`, `sessionId`, `connectedCwd`, `lastError`
+- Pattern: Broadcast to subscribers via `onConnectionStateChange` listener
 
 ## Entry Points
 
-**Extension Host:**
+**Extension Activation:**
 - Location: `src/extension.ts`
-- Triggers: VS Code `activate()` event
-- Responsibilities: Register commands (`iflow-for-vscode.openPanel`, `iflow-for-vscode.lockGroup`), register sidebar webview providers (primary + secondary)
+- Triggers: VS Code loads extension
+- Responsibilities:
+  - Register `iflow-for-vscode.openPanel` command
+  - Register sidebar webview providers (primary + secondary)
+  - Manage command subscriptions
 
-**Webview:**
-- Location: `media/main.ts`
-- Triggers: `DOMContentLoaded` event in the webview iframe
-- Responsibilities: Instantiate `IFlowApp`, post `{ type: 'ready' }` to extension host, enter render loop
+**Panel Creation:**
+- Location: `src/panel.ts` (`IFlowPanel.createOrShow()`)
+- Triggers: User clicks command or sidebar provider resolved
+- Responsibilities:
+  - Create VS Code WebviewPanel
+  - Instantiate `WebviewHandler`
+  - Bind webview listeners
+  - Set initial HTML
 
-**Webpack Entry Points:**
-- Extension bundle: `src/extension.ts` → `dist/extension.js` (Node.js target)
-- Webview bundle: `media/main.ts` → `dist/webview.js` (web target)
-- Config: `webpack.config.js`
+**Sidebar Creation:**
+- Location: `src/sidebarProvider.ts` (`IFlowSidebarProvider.resolveWebviewView()`)
+- Triggers: VS Code shows sidebar view
+- Responsibilities: Same as panel but for persistent sidebar view
+
+**Webview Initialization:**
+- Location: `media/main.ts` (Webview script entry)
+- Triggers: WebviewPanel/Sidebar HTML loads
+- Responsibilities:
+  - Acquire VS Code API
+  - Create `IFlowApp` instance
+  - Attach listeners via `eventBinder.ts`
+  - Start render loop
+
+**WebviewHandler Setup:**
+- Location: `src/webviewHandler.ts`
+- Triggers: Called from `IFlowPanel`/`IFlowSidebarProvider` constructor
+- Responsibilities:
+  - Initialize `AcpClient`
+  - Initialize `ConversationStore`
+  - Set up message listeners
+  - Generate HTML template
+  - Register disposal callbacks
 
 ## Error Handling
 
-**Strategy:** Classify errors at boundaries using `toAppError()`, surface user-friendly messages to webview via `streamError` message type, log full details via debug logger.
+**Strategy:** Explicit, categorized error propagation with user-facing messaging.
 
 **Patterns:**
-- All errors normalized through `src/errorUtils.ts:toAppError()` → `AppError` with typed `code`
-- `DefaultErrorMapper.normalizeForWebview()` in `src/shared/errorBoundary.ts` translates error codes to user-facing messages
-- `SendMessagePipeline` catches all run errors, calls `store.batchUpdate()` to finalize streaming state, then posts `streamError` to webview
-- `InteractionBridge` auto-cancels timed-out pending interactions with a `warning` StreamChunk
-- `SessionCoordinator` tears down transport on any connection error, resets to `disconnected` state
+
+- **On ACP Connection Failure:**
+  - `SessionCoordinator` catches transport errors
+  - `toAppError()` classifies (CLI_UNAVAILABLE, TIMEOUT, etc)
+  - Broadcast via `onConnectionStateChange` listener
+  - `SendMessagePipeline` catches and posts `streamError` message
+
+- **On Chunk Processing Failure:**
+  - `ChunkMapper` logs but does not throw (graceful degradation)
+  - `applyChunkToMessage()` safe-checks block indices before mutation
+
+- **On Invalid User Input:**
+  - `SendMessagePipeline.execute()` validates before run
+  - Message validation in webview via type guards
+
+- **On File Access:**
+  - `PathPolicy.ensureAllowedPath()` blocks unauthorized paths
+  - Returns `SECURITY_DENIED` error code
+
+- **On Interaction Timeout:**
+  - `InteractionBridge` awaits response with timeout
+  - Rejects promise on timeout → caught in `SendMessagePipeline`
 
 ## Cross-Cutting Concerns
 
-**Logging:** All components receive a `log: (message: string) => void` dependency; implementation is `AcpDebugLogger` (`src/acp/debugLogger.ts`) backed by VS Code output channel, gated by `iflow.debugLogging` config. Use `AppLogger` interface from `src/shared/logger.ts`.
+**Logging:**
+- Framework: `src/shared/logger.ts` interface `AppLogger`
+- Pattern: Child loggers with context propagation (component, sessionId, conversationId)
+- Implementation: `OutputChannelLogger` writes to VS Code output channel
+- Usage: All major components receive logger in constructor dependencies
 
-**Validation:** Path access validated by `PathPolicy` (`src/acp/pathPolicy.ts`) — `ensureAllowedPath()` throws `SECURITY_DENIED` for out-of-workspace paths. Input validated at webview message boundary in `WebviewHandler.handleMessage()`.
+**Validation:**
+- Type guards: `src/shared/typeGuards.ts` exports `isObject()` for payload validation
+- Schema: Implicit via TypeScript union types (StreamChunk, Message, etc)
+- CLI validation: Implicit in ACP protocol (server rejects invalid payloads)
 
-**Authentication:** ACP session authentication handled in `SessionCoordinator.ensureConnected()` — iterates auth methods in priority order (`oauth-iflow`, `iflow`, `openai-compatible`); PKCE OAuth flow available in `src/auth/pkceFlow.ts`.
+**Authentication:**
+- Pattern: `InteractionBridge` holds pending promises for approval/question interactions
+- Resolved when webview user responds (postMessage `toolApproval`, `questionAnswer`, `planApproval`)
+- Timeout: `DEFAULT_INTERACTION_TIMEOUT_MS` from constants
+
+**File Access Control:**
+- `PathPolicy` in `src/acp/pathPolicy.ts` validates against workspace folders
+- Blocks paths outside allowed directories
+- Enforced at tool execution time
 
 ---
 

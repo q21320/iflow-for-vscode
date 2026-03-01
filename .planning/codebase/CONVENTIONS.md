@@ -5,209 +5,199 @@
 ## Naming Patterns
 
 **Files:**
-- `camelCase.ts` for modules: `acpClientFacade.ts`, `chunkReducer.ts`, `interactionBridge.ts`
-- `camelCase.ts` for utilities: `typeGuards.ts`, `errorBoundary.ts`, `visualUpdateScheduler.ts`
-- `PascalCase` class names match file names: `SessionCoordinator` in `sessionCoordinator.ts`
-- Test files: `<subjectName>.test.ts` in `src/test/`
-
-**Classes:**
-- PascalCase: `AcpClient`, `SessionCoordinator`, `InteractionBridge`, `OutputChannelLogger`
-- Suffix pattern for role clarity: `*Facade`, `*Executor`, `*Router`, `*Mapper`, `*Reducer`, `*Coordinator`
-- Fake/stub classes in tests prefixed with `Fake`: `FakeTransport`, `FakeProtocol`, `FakeMemento`
+- Kebab-case for files: `session-coordinator.ts`, `chunk-reducer.ts`
+- Controllers, services, and utilities use descriptive compound names: `interactionBridge.ts`, `acpClientFacade.ts`
+- Test files colocate with source: `*.test.ts` adjacent to source in `src/test/`
+- Type definition files: `types.ts`, `panelTypes.ts`, `storeTypes.ts`
 
 **Functions:**
-- camelCase: `applyChunkToMessage`, `normalizeErrorMessage`, `classifyAppErrorCode`
-- Private helpers prefixed with nothing (no underscore), just declared `private`
-- Factory/builder functions: `createAssistantMessage()`, `createStore()`, `createGuard()`
-- Helper functions for test data named `create*` or `base*`
+- camelCase for all function declarations and exports
+- Private helper functions: `findLastBlockIndex()`, `copyBlocks()`, `getConfig()`
+- Public methods in classes use camelCase: `getCurrentConversation()`, `appendToAssistantMessage()`
+- Helper functions precede usage in file (bottom-up organization)
 
 **Variables:**
-- camelCase: `pendingInteractions`, `timeoutHandles`, `connectionSnapshot`
-- Constants: `SCREAMING_SNAKE_CASE` for module-level constants: `DEFAULT_INTERACTION_TIMEOUT_MS`, `INITIAL_CONNECTION_SNAPSHOT`
-- Numeric literal separators: `120_000` (underscore separators for large numbers)
+- camelCase for local variables: `message`, `blocks`, `sessionId`
+- UPPER_SNAKE_CASE for constants: `DEFAULT_INTERACTION_TIMEOUT_MS`, `EMPTY_MCP_SERVERS`
+- Prefix booleans with `is`, `has`, `can`, `should`: `isConnected`, `hasProcess`, `canApprove`
+- Private class fields prefixed with underscore: `_load`, `_handlers`, `_socket`
 
-**Types and Interfaces:**
-- PascalCase: `StreamChunk`, `OutputBlock`, `ConnectionSnapshot`
-- Discriminated unions use string literal `type` or `chunkType` fields
-- Interface suffix: no `I` prefix — just `LogContext`, `AppLogger`, `ErrorMapper`
-- Options interfaces suffixed with `Options`: `InteractionBridgeOptions`, `OutputChannelLoggerOptions`
-- Dependencies object interfaces suffixed with `Dependencies`: `SessionCoordinatorDependencies`, `ConversationServiceDependencies`
-
-**Enum-like Constants:**
-- Union string types preferred over TypeScript enums:
-  ```typescript
-  export type AppErrorCode = 'UNKNOWN' | 'MISSING_SESSION' | 'CLI_UNAVAILABLE' | ...
-  export type StreamStatusPhase = 'preparing' | 'connecting' | 'waiting_first_chunk';
-  ```
+**Types:**
+- PascalCase for all type names: `Message`, `StreamChunk`, `OutputBlock`, `ConnectionSnapshot`
+- Interface names describe contract without `I` prefix: `SessionCoordinatorDependencies`, `AppLogger`
+- Type aliases for unions/tuples: `LogLevel = 'debug' | 'info' | 'warn' | 'error'`
+- Discriminated union types use literal `type` field: `type: "tool" | "text" | "code"`
 
 ## Code Style
 
 **Formatting:**
-- No Prettier config detected — formatting enforced manually
-- 2-space indentation (observed uniformly across all source files)
-- Trailing commas in multi-line object/array literals
-- Single quotes for strings in most files; some files mix with double quotes
+- Configured via ESLint (eslint.config.mjs)
+- 2-space indentation (standard for TypeScript in this project)
+- Semicolons required (ESLint rule: `semi: "warn"`)
+- Curly braces required on all blocks (ESLint rule: `curly: "warn"`)
+- Line length: No strict limit, but prefer readability
 
 **Linting:**
-- Tool: ESLint with `typescript-eslint`, config at `eslint.config.mjs`
-- Key rules enabled:
-  - `@typescript-eslint/naming-convention`: imports must be camelCase or PascalCase
-  - `curly`: warn — all control flow must use braces
-  - `eqeqeq`: warn — strict equality (`===`) required
-  - `no-throw-literal`: warn — only Error objects may be thrown
-  - `semi`: warn — semicolons required
-
-**TypeScript Settings:**
-- `strict: true` in `tsconfig.json`
-- Target `ES2022`, module `Node16`
-- `rootDir: src`, `outDir: out`
+- Tool: ESLint 9.39.2 with typescript-eslint
+- Config: `eslint.config.mjs` in project root
+- Key rules:
+  - `@typescript-eslint/naming-convention`: Enforces camelCase for imports, PascalCase for classes
+  - `curly`: Requires braces on control structures
+  - `eqeqeq`: Requires `===` and `!==` (warn)
+  - `no-throw-literal`: Prevents throwing non-Error objects (warn)
+- Run: `npm run lint` checks `src/**/*.ts`
 
 ## Import Organization
 
-**Order (observed pattern):**
-1. Node.js built-ins as namespace imports: `import * as fs from 'fs'`
-2. Third-party packages: `import * as vscode from 'vscode'`
-3. Internal imports: `import { ... } from '../protocol'`
-4. Sibling imports: `import { ... } from './types'`
+**Order:**
+1. Standard library/framework imports: `import * as assert from "assert"`
+2. Third-party packages: `import * as vscode from "vscode"`, `import type { SomeType } from "ws"`
+3. Internal absolute imports: `import { Message } from "../protocol"`
+4. Internal relative imports: `import { ChunkMapper } from "../../chunkMapper"`
 
 **Path Aliases:**
-- None defined — all imports use relative paths
+- No path aliases configured; all imports are relative
+- Use dot-relative paths: `"../protocol"`, `"../../shared/logger"`
 
-**Namespace Imports:**
-- Node built-ins always imported as namespaces: `import * as fs from 'fs'`, `import * as path from 'path'`
-- VSCode API: `import * as vscode from 'vscode'`
-- Standard library (`assert`) in tests: `import * as assert from 'assert'`
-- Application code uses named imports: `import { AppError, toAppError } from '../errorUtils'`
+**Conventions:**
+- Namespace imports for side effects or re-exports: `import * as assert from "assert"`
+- Type imports use `import type` when importing only types
+- Re-exports in index files: barrel files like `src/protocol/index.ts` group related types
+- Unused imports must be removed (no dead code in imports)
 
 ## Error Handling
 
 **Patterns:**
-- Classify errors into `AppErrorCode` using `classifyAppErrorCode()` in `src/errorUtils.ts`
-- Wrap all errors into `AppError` via `toAppError()` before propagating
-- Map errors for webview display using `DefaultErrorMapper.normalizeForWebview()` in `src/shared/errorBoundary.ts`
-- Always check `err instanceof Error` before accessing `.message`:
-  ```typescript
-  const message = err instanceof Error ? err.message : String(err);
-  ```
-- Async server handlers wrap in try/catch and return `{ error: message }` objects (never throw):
+- Custom `AppError` class defined in `src/errorUtils.ts` with typed error codes
+- Error codes: `'UNKNOWN'`, `'MISSING_SESSION'`, `'CLI_UNAVAILABLE'`, `'VALIDATION_FAILED'`, `'JSON_RPC_ERROR'`, `'IO_ERROR'`, `'SECURITY_DENIED'`, `'TIMEOUT'`
+- Always use `normalizeErrorMessage()` function to extract human-readable messages from any value
+- Always use `toAppError()` to classify and wrap errors: `const err = toAppError(caughtValue)`
+- Error handling pattern:
   ```typescript
   try {
-    // ...
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    this.log(`fs/read_text_file failed: ${message}`);
-    return { error: message };
+    // operation
+  } catch (err) {
+    const appErr = toAppError(err, 'Operation failed');
+    logger.error('Detailed context', appErr);
+    // Handle based on appErr.code
   }
   ```
-- Errors in cancelled interactions are caught and logged (never re-thrown from `resolveCancelled`)
-
-## Immutability
-
-**Core convention: never mutate existing objects — always return new copies.**
-
-This is enforced throughout `src/store/chunkReducer.ts` (pure reducer):
-```typescript
-// Always spread to create new object
-const blocks = [...message.blocks];
-blocks[idx] = { ...current, content: current.content + chunk.content };
-return { ...message, blocks };
-```
-
-Conversation mutations (`src/store/conversationMutations.ts`) use the same pattern:
-```typescript
-const conversations = [...state.conversations];
-conversations[index] = updated;
-return { nextState: { ...state, conversations } as TState, updatedConversation: updated };
-```
-
-Test for immutability: `chunkReducer.test.ts` explicitly freezes objects and verifies no mutation:
-```typescript
-Object.freeze(original);
-Object.freeze(original.blocks);
-const updated = applyChunkToMessage(original, chunk);
-assert.notStrictEqual(updated, original);
-```
+- Never throw raw strings or non-Error objects; throw `AppError` instances
+- Provide `cause` field for error chaining: `new AppError(msg, { code: 'X', cause: originalError })`
 
 ## Logging
 
-**Framework:** Custom `AppLogger` interface defined at `src/shared/logger.ts`
+**Framework:** Custom `AppLogger` interface in `src/shared/logger.ts`
 
-**Interface:**
-```typescript
-interface AppLogger {
-  child(context: Partial<LogContext>): AppLogger;
-  debug(message: string, extra?: Record<string, unknown>): void;
-  info(message: string, extra?: Record<string, unknown>): void;
-  warn(message: string, extra?: Record<string, unknown>): void;
-  error(message: string, error?: unknown, extra?: Record<string, unknown>): void;
-}
-```
-
-**Implementation:** `OutputChannelLogger` — logs to VS Code output channel with format:
-`[ISO_TIMESTAMP] [LEVEL] [COMPONENT] message {extra_json}`
-
-**Pattern:** Pass logger as constructor dependency (injection), create child loggers with context:
-```typescript
-constructor(private readonly log: (message: string) => void) {}
-// or for AppLogger
-this.logger = logger.child({ component: 'SessionCoordinator' });
-```
-
-**Debug logging:** Gated by config `iflow.debugLogging` — use `logger.debug()` for verbose traces.
+**Patterns:**
+- All logging uses injected `AppLogger` interface (not `console`)
+- Logger methods: `debug()`, `info()`, `warn()`, `error()`
+- Create child loggers with context: `logger.child({ component: 'SessionCoordinator', sessionId })`
+- Log structure: `logger.method(message, optionalExtra)`
+- Error logging always includes error object: `logger.error('Failed to fetch', error, { extra })`
+- Debug logs only emit when `getDebugLoggingEnabled()` returns true
+- Output uses ISO timestamp + level + component name: `[2026-03-01T12:00:00.000Z] [INFO] [ComponentName] message`
 
 ## Comments
 
 **When to Comment:**
-- Protocol-level comments for non-obvious behaviors: `// Some ACP runtimes emit an early anonymous start...`
-- Section dividers in test files: `// ── Integration: mapper + reducer ──────────────────────────────`
-- Brief JSDoc only on public API functions: `/** Read a vscode config value with fallback. */`
-- Test hooks annotated: `// Backward-compat test hook.`
+- Document WHY, not WHAT (code should be self-documenting)
+- Use comments for non-obvious business logic or workarounds
+- Prefix temporary workarounds with `TODO`, `FIXME`, `HACK`, `XXX`
+- Example comment style:
+  ```typescript
+  // Backward-compat test hook for test setup
+  setConnectionForTests(...) { }
+  ```
 
 **JSDoc/TSDoc:**
-- Minimal — used only on exported public-facing functions
-- No `@param` / `@returns` annotations in the observed code
+- Used sparingly on public APIs and complex functions
+- File headers describe module purpose (comment block at top of file):
+  ```typescript
+  // SessionCoordinator: Connection lifecycle management and state transitions.
+  ```
+- Function-level JSDoc on facade methods:
+  ```typescript
+  /** Read a vscode config value with fallback. */
+  function getConfig<T>(key: string, defaultValue: T): T { }
+  ```
+- No excessive JSDoc on private methods or obvious code
 
 ## Function Design
 
-**Size:** Functions kept short (<50 lines). Private helper functions extracted for lookup operations:
-```typescript
-function findToolBlockIndexByCallId(blocks: OutputBlock[], toolCallId: string): number { ... }
-function findLatestRunningAnonymousToolIndexByName(blocks: OutputBlock[], toolName: string): number { ... }
-```
+**Size:**
+- Target: 50 lines maximum for most functions
+- Complex reducers allowed up to ~100 lines if single responsibility
+- Extracted helper functions in same file if not reusable elsewhere
+- Examples:
+  - `findLastBlockIndex()`: 8 lines
+  - `applyChunkToMessage()`: ~150 lines (large reducer, acceptable for single domain task)
+  - `appendToAssistantMessage()`: ~50 lines
 
-**Parameters:** Dependencies injected via constructor options objects (`deps` pattern):
-```typescript
-constructor(private readonly deps: SessionCoordinatorDependencies) {}
-```
-Single-object `options` param for optional configuration:
-```typescript
-constructor(..., options: InteractionBridgeOptions = {}) {
-  this.interactionTimeoutMs = options.interactionTimeoutMs ?? 120_000;
-}
-```
+**Parameters:**
+- Prefer 3-5 parameters; use config objects for >3 parameters
+- Example: `constructor(deps: SessionCoordinatorDependencies)` vs `constructor(a, b, c, d, e, f)`
+- Callback parameters usually last: `function start(config, onComplete, onError)`
 
 **Return Values:**
-- Discriminated union types for results
-- Return `null` (not `undefined`) for absent values: `currentSessionId: string | null`
-- Mutation operations return `void`; query operations return typed results
+- Explicitly type all return values (no implicit `any`)
+- Return immutable copies for state mutations: `{ nextState, updatedConversation }`
+- Void-returning functions use `void` type annotation
+- Nullable returns use union: `Conversation | null` not `Conversation | undefined`
 
 ## Module Design
 
 **Exports:**
-- Named exports only — no default exports anywhere in the codebase
-- Classes exported: `export class SessionCoordinator { ... }`
-- Functions exported: `export function applyChunkToMessage(...) { ... }`
+- Only export public APIs; keep internal helpers private (not exported)
+- One primary export per file when possible (class or factory)
+- Named exports for utilities and pure functions: `export function createConversationId()`
+- Re-export from index files to create logical API surfaces:
+  ```typescript
+  // src/protocol/index.ts
+  export * from './conversation';
+  export * from './stream';
+  ```
 
 **Barrel Files:**
-- Old single-file entry points kept as barrel re-exports for backward compatibility:
-  - `src/acpClient.ts` re-exports from `src/acp/client/acpClientFacade.ts`
-  - `src/protocol.ts` re-exports from `src/protocol/index.ts`
-  - `src/chunkMapper.ts` re-exports from `src/chunkMapper/index.ts`
-  - `src/store.ts` re-exports from `src/store/` sub-modules
+- Used in `src/protocol/`, `src/acp/client/`, `src/chunkMapper/` for bundling related exports
+- Allows downstream imports: `import { Message } from '../protocol'` vs `import { Message } from '../protocol/conversation'`
+- Index files must not contain logic, only re-exports
 
-**Types Files:**
-- Each major subdirectory has a `types.ts` for domain-specific types: `src/acp/types.ts`, `src/store/storeTypes.ts`, `src/chunkMapper/types.ts`
-- Cross-cutting protocol types live in `src/protocol/` with `index.ts` barrel
+**Immutability:**
+- All state mutations use spread operators to create new objects
+- Example pattern in `applyChunkToMessage()`:
+  ```typescript
+  const blocks = copyBlocks(message);
+  blocks[idx] = { ...current, content: current.content + chunk.content };
+  return { ...message, blocks, content: message.content + chunk.content };
+  ```
+- No in-place mutations of objects from parameters or state
+- Array mutations use `.push()`, `.filter()`, `.map()` on copies: `[...array]`
+
+## Type Guards
+
+**Centralized Location:** `src/shared/typeGuards.ts`
+
+**Pattern:**
+- Single type guard function: `isObject(value: unknown): value is Record<string, unknown>`
+- Used in discriminated unions: `if (block.type === "tool")`
+- No per-file type guards; all centralized in shared module
+- Usage: `isObject(someValue)` to test before property access
+
+## File Structure
+
+**Max File Size:** 500 lines for source files (test files exempt)
+- Larger modules decompose into subdirectories with clear separation
+- Example: `src/acp/client/` splits `AcpClient` into:
+  - `acpClientFacade.ts` (public API)
+  - `acpRunExecutor.ts` (run/cancel logic)
+  - `acpNotificationRouter.ts` (notification dispatch)
+  - `acpUsageExtractor.ts` (token usage)
+
+**Directory Organization:**
+- By feature/domain: `src/acp/`, `src/store/`, `src/webview/`, `src/protocol/`
+- Horizontal slicing by function: Types in `types.ts`, implementations in domain files
+- Test files colocate: `src/test/` directory with `*.test.ts` files matching source structure
 
 ---
 

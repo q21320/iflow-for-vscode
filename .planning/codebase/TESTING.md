@@ -5,361 +5,314 @@
 ## Test Framework
 
 **Runner:**
-- Mocha `^11.7.4` with TDD UI (`--ui tdd`)
-- Config: no separate mocha config file — arguments passed directly in `package.json` scripts
+- Mocha 11.7.4
+- Config: Implicit (CLI-driven, see scripts below)
+- UI: TDD style (`suite`, `test`)
 
 **Assertion Library:**
-- Node.js built-in `assert` module, imported as `import * as assert from 'assert'`
-- Uses strict-mode assertions: `assert.strictEqual`, `assert.deepStrictEqual`, `assert.ok`, `assert.rejects`
-
-**Coverage:**
-- Tool: `c8 ^9.1.0`
-- Current overall coverage: **76.53% lines / 73.02% functions / 75.86% branches**
+- Node.js built-in `assert` module (strict mode)
+- Common assertions: `assert.ok()`, `assert.strictEqual()`, `assert.deepStrictEqual()`
 
 **Run Commands:**
 ```bash
-npm run test:unit          # Compile + run all unit tests
-npm run test:coverage      # Compile + run with c8 coverage report
-npm run coverage:check     # Run coverage and enforce threshold
-npm run test:real-cli      # Run real CLI integration smoke tests (requires live CLI)
+npm run test:unit              # Run all unit tests
+npm run test:coverage         # Run tests with coverage report
+npm run lint                  # ESLint check
+npm run pretest               # compile-tests + compile + lint
 ```
 
 ## Test File Organization
 
-**Location:** All unit test files live in `src/test/` (separate directory, not co-located)
+**Location:**
+- Co-located in `src/test/` directory
+- Separate from source by convention; could migrate to co-location with tests beside source
 
-**Naming:** `<subjectName>.test.ts` matching the source file name:
-- `src/acp/interactionBridge.ts` → `src/test/interactionBridge.test.ts`
-- `src/store/chunkReducer.ts` → `src/test/chunkReducer.test.ts`
-- `src/acp/sessionCoordinator.ts` → `src/test/sessionCoordinator.test.ts`
-
-**Compiled Output:** Tests compiled from `src/test/*.test.ts` to `out/test/*.test.js` via `tsc`
+**Naming:**
+- Pattern: `{module}.test.ts`
+- Examples: `store.test.ts`, `acpClient.test.ts`, `chunkReducer.test.ts`
 
 **Structure:**
 ```
 src/test/
-  acpClient.test.ts
-  acpProtocol.test.ts
-  acpTransport.test.ts
-  authService.test.ts
-  chunkMapper.test.ts
-  chunkReducer.test.ts
-  cliDiscovery.test.ts
-  errorUtils.test.ts
-  extension.test.ts
-  fileChangeReviewService.test.ts
-  inactivityGuard.test.ts
-  interactionBridge.test.ts
-  markdownUrlPolicy.test.ts
-  messageRouter.test.ts
-  pathPolicy.test.ts
-  processManager.test.ts
-  questionPanelState.test.ts
-  realCliSmoke.test.ts          # Real CLI integration (guarded by env var)
-  realPlanModeSmoke.test.ts     # Real CLI plan mode smoke
-  realToolCallSmoke.test.ts     # Real CLI tool call smoke
-  runtimeConfigApplier.test.ts
-  runtimeStateSource.test.ts
-  sendMessagePipeline.test.ts
-  sessionCoordinator.test.ts
-  store.test.ts
-  streamStatusUtils.test.ts
-  subagentProgressTracker.test.ts
-  thinkingParser.test.ts
-  toolChunkMapper.test.ts
-  visualUpdateScheduler.test.ts
-  websocket.test.ts
-  webviewHandler.test.ts
-
-test/unit/
-  vscode-shim.js             # Module interception shim for vscode API
+├── unit/
+│   └── vscode-shim.js          # Mock vscode API for tests
+├── *.test.ts                   # Unit test files
+├── real*.test.ts               # Integration tests (real CLI)
+└── realCliTestHelper.ts        # Shared test utilities
 ```
 
 ## Test Structure
 
-**Suite Organization (TDD UI):**
+**Suite Organization:**
 ```typescript
-import * as assert from 'assert';
-import { SubjectClass } from '../path/to/subject';
+import * as assert from "assert";
+import { ConversationStore } from "../store";
 
-suite('SubjectClass', () => {
-  let instance: SubjectClass;
-
-  setup(() => {
-    instance = new SubjectClass(/* minimal args */);
+suite("ConversationStore", () => {
+  test("loads saved conversation and preserves mode and model", () => {
+    // Arrange
+    const memento = new FakeMemento({ /* ... */ });
+    const store = new ConversationStore(memento as any, () => {});
+    
+    // Act
+    const conversation = store.getCurrentConversation();
+    
+    // Assert
+    assert.ok(conversation);
+    assert.strictEqual(conversation?.mode, "smart");
   });
 
-  teardown(() => {
-    instance.stop();  // cleanup timers, connections, etc.
-  });
-
-  test('does X when Y', () => {
-    // arrange
-    // act
-    // assert
-    assert.strictEqual(actual, expected);
-  });
-
-  test('handles async scenario', async () => {
-    await assert.rejects(
-      instance.someAsyncMethod(),
-      /expected error pattern/,
-    );
+  test("new conversation gets default model and mode", () => {
+    // ...
   });
 });
 ```
 
-**Lifecycle hooks used:**
-- `setup()` — initialize shared test state before each test
-- `teardown()` — clean up resources (stop guards, disconnect transports) after each test
-- No `suiteSetup`/`suiteTeardown` observed
-
-**Test naming convention:** Descriptive imperative sentences:
-- `'establishes connection and reaches ready state'`
-- `'reuses connection for same cwd and loads requested session'`
-- `'triggers after timeout when running'`
-- `'immutability preserved'`
+**Patterns:**
+- Setup/Teardown: Use suite-level variables for shared fixtures; no `before()`/`after()` hooks observed
+- Test isolation: Create fresh test doubles (FakeMemento, FakeTransport) per test
+- Assertion pattern: Direct `assert.strictEqual()`, `assert.deepStrictEqual()`, `assert.ok()`
+- Async tests: Return `Promise` from test function
+  ```typescript
+  test("async operation resolves", async () => {
+    const result = await someAsyncOperation();
+    assert.strictEqual(result, expected);
+  });
+  ```
 
 ## Mocking
 
-**Framework:** No mock library — all fakes are hand-written inline classes within the test file.
+**Framework:** Hand-crafted test doubles (no mocking library like Sinon)
 
-**Pattern — Fake Classes:**
-All collaborators are replaced with minimal hand-written `Fake*` classes that implement the same interface shape:
-
+**Patterns:**
 ```typescript
+// Fake class implementing interface
 class FakeTransport {
   connected = false;
-  connectCalls = 0;
-  disconnectCalls = 0;
-  lastConnectUrl: string | null = null;
   onClose: ((error?: Error) => void) | null = null;
 
-  async connect(options?: { url: string }): Promise<void> {
+  async connect(): Promise<void> {
     this.connected = true;
-    this.connectCalls += 1;
-    this.lastConnectUrl = options?.url ?? null;
   }
 
   async disconnect(): Promise<void> {
     this.connected = false;
-    this.disconnectCalls += 1;
   }
 
-  triggerClose(error?: Error): void {
-    this.connected = false;
-    this.onClose?.(error);
+  get isConnected(): boolean {
+    return this.connected;
   }
 
   async send(): Promise<void> {}
+
   async receive(): Promise<string> {
-    return new Promise<string>(() => {});  // blocks forever in tests
+    return new Promise<string>(() => {}); // blocks forever
   }
 }
 ```
 
-**Pattern — Controllable Behavior:**
-Fake objects expose configurable state to control test scenarios:
-```typescript
-class FakeProtocol {
-  failOnMethod: string | null = null;
-  failAuthMethodId: string | null = null;
-  initializeResult: { isAuthenticated?: boolean; authMethods?: ... } = { isAuthenticated: false };
-
-  async sendRequest(method: string, params?: unknown): Promise<unknown> {
-    if (this.failOnMethod && method === this.failOnMethod) {
-      throw new Error(`forced failure on ${method}`);
-    }
-    switch (method) {
-      case 'initialize': return this.initializeResult;
-      // ...
-    }
-  }
-}
-```
-
-**Pattern — Call Tracking:**
-Fakes record calls for assertion:
-```typescript
-class FakeClient {
-  runCalls: RunOptions[] = [];
-
-  async run(options: RunOptions, ...): Promise<string | undefined> {
-    this.runCalls.push(options);
-    // ...
-  }
-}
-```
-
-**vscode API shim:**
-The `test/unit/vscode-shim.js` file patches `Module._load` to intercept `require('vscode')` calls and return a mock object. This allows all extension host code that imports `vscode` to run in plain Node.js:
-```javascript
-Module._load = function patchedLoad(request, parent, isMain) {
-  if (request === 'vscode') {
-    return mockVscode;
-  }
-  return originalLoad.call(this, request, parent, isMain);
-};
-```
+**VSCode Mock:** `test/unit/vscode-shim.js` patches `require('vscode')` globally
+- Provides mock implementations of `workspace.getConfiguration()`, `window.createOutputChannel()`, etc.
+- Allows tests to import vscode without actual VS Code context
 
 **What to Mock:**
-- External I/O: transports, protocols, process managers
-- VS Code APIs: use the shim for the full `vscode` module
-- Time-dependent behavior: use short timeout values (`interactionTimeoutMs: 20`)
+- External dependencies: Transport, Protocol, ProcessManager
+- UI APIs: vscode.workspace, vscode.window
+- Database/Storage: FakeMemento for state persistence
+- Time-dependent code: Not observed, use real timers or explicit delays
 
 **What NOT to Mock:**
-- Pure functions and reducers: test directly (`applyChunkToMessage`, `classifyAppErrorCode`)
-- Data transformation logic: test with real implementations
+- Pure reducer functions: Test with real input/output
+- Business logic in service classes: Test actual behavior, not mocks
+- Protocol parsing: Test real message transformation
 
 ## Fixtures and Factories
 
-**Test Data Factories:**
-Named factory functions defined at the top of each test file:
+**Test Data:**
 ```typescript
+// Helper function factories
 function createAssistantMessage(): Message {
   return {
-    id: 'm1',
-    role: 'assistant',
-    content: '',
+    id: "m1",
+    role: "assistant",
+    content: "",
     blocks: [],
     attachedFiles: [],
     timestamp: Date.now(),
   };
 }
 
-function baseRunOptions(overrides: Partial<RunOptions> = {}): RunOptions {
-  return {
-    prompt: 'hello',
-    attachedFiles: [],
-    mode: 'default',
-    think: false,
-    model: 'GLM-4.7',
-    cwd: '/tmp/workspace-a',
-    ...overrides,
-  };
+function getToolBlocks(message: Message): Array<Extract<OutputBlock, { type: "tool" }>> {
+  return message.blocks.filter(
+    (block): block is Extract<OutputBlock, { type: "tool" }> =>
+      block.type === "tool",
+  );
 }
+
+// Usage in test
+test("tracks concurrent same-name tools by toolCallId", () => {
+  let message = createAssistantMessage();
+  message = applyChunkToMessage(message, { /* ... */ });
+  const tools = getToolBlocks(message);
+  assert.strictEqual(tools.length, 3);
+});
 ```
 
-**Helper functions for repeated sequences:**
-```typescript
-function applyChunks(message: Message, chunks: StreamChunk[]): Message {
-  let result = message;
-  for (const chunk of chunks) {
-    result = applyChunkToMessage(result, chunk);
-  }
-  return result;
-}
-```
-
-**Location:** Fixtures are defined inline at the top of each test file — no shared fixture directory.
+**Location:**
+- Helper functions defined in test file itself (not shared)
+- No external fixture files; factories defined per test suite for clarity
 
 ## Coverage
 
-**Current Coverage (latest run):**
-- Lines: **76.53%** (target appears to be 80% based on `npm run coverage:check`)
-- Functions: **73.02%**
-- Branches: **75.86%**
-
-**Well-covered modules (>90%):**
-- `src/acp/inactivityGuard.ts`: 100%
-- `src/store/chunkReducer.ts`: ~95% (via chunkReducer.test.ts)
-- `src/acp/sessionCoordinator.ts`: 95.18%
-- `src/acpTransport.ts`: 93.46%
-- `src/streamStatusUtils.ts`: 97.36%
-
-**Under-covered modules (<50%):**
-- `src/auth/credentialsStore.ts`: 25% lines
-- `src/auth/settingsStore.ts`: 19.64% lines
-- `src/acp/debugLogger.ts`: 36% lines
-- `src/cliDiscovery.ts`: 33.67% lines
+**Requirements:** No strict coverage threshold enforced in CI
 
 **View Coverage:**
 ```bash
-npm run test:coverage      # Prints text summary + writes coverage/coverage-summary.json
+npm run test:coverage
+# Output: text report + JSON summary in coverage/coverage-summary.json
 ```
+
+**Coverage Config:**
+- Tool: c8 9.1.0
+- Generates JSON and text reporters
+- No .c8rc config file; defaults applied
 
 ## Test Types
 
-**Unit Tests (all in `src/test/`):**
-- Pure logic: `chunkReducer.test.ts`, `errorUtils.test.ts`, `toolChunkMapper.test.ts`
-- Class behavior with fakes: `sessionCoordinator.test.ts`, `interactionBridge.test.ts`, `sendMessagePipeline.test.ts`
-- Timing/async: `inactivityGuard.test.ts`, `visualUpdateScheduler.test.ts`
-- Protocol parsing: `acpProtocol.test.ts`, `acpTransport.test.ts`
+**Unit Tests:**
+- Scope: Individual functions, reducers, services
+- Approach: Test pure functions with known inputs/outputs
+- Examples:
+  - `chunkReducer.test.ts` - pure reducer function `applyChunkToMessage()`
+  - `errorUtils.test.ts` - classification and normalization functions
+  - `questionPanelState.test.ts` - state machine transitions
+- Setup: Fast, no async I/O, isolated test doubles
 
-**Integration/Smoke Tests:**
-- `src/test/realCliSmoke.test.ts` — full ACP round-trip with real CLI process
-- `src/test/realPlanModeSmoke.test.ts` — plan mode flow with real CLI
-- `src/test/realToolCallSmoke.test.ts` — tool call flow with real CLI
-- Run via `npm run test:real-cli` (requires CLI installed and running)
+**Integration Tests:**
+- Scope: Services with real ACP transport, session lifecycle
+- Approach: Compose multiple modules, test end-to-end behavior
+- Examples:
+  - `acpClient.test.ts` - client lifecycle with FakeProtocol/FakeTransport
+  - `sessionCoordinator.test.ts` - connection management across modules
+  - `sendMessagePipeline.test.ts` - full message send workflow
+- Setup: May use async operations, test doubles for external services
 
 **E2E Tests:**
-- No browser/UI E2E framework used
-- Smoke tests via `scripts/plan-mode-e2e-test.mjs` and `scripts/tool-call-e2e-test.mjs` — node scripts that invoke the ACP protocol directly against a live CLI
+- Scope: Integration tests with real iFlow CLI
+- Approach: Actual binary execution, real WebSocket connection
+- Examples:
+  - `realCliSmoke.test.ts` - basic CLI availability and echo
+  - `realToolCallSmoke.test.ts` - tool invocation roundtrip
+  - `realPlanModeSmoke.test.ts` - plan mode flow
+- Run: `npm run test:real-cli` (requires CLI binary installed)
+- Setup: Spawn real processes, open real sockets, slower tests
 
 ## Common Patterns
 
 **Async Testing:**
 ```typescript
-test('handles async error', async () => {
-  await assert.rejects(
-    coordinator.ensureConnected(baseRunOptions()),
-    /Session coordinator is disposed/,
+test("permission interaction resolves selected option", async () => {
+  const bridge = new InteractionBridge(
+    (chunk) => chunks.push(chunk.chunkType),
+    (rawPath) => rawPath,
+    () => {},
+    { interactionTimeoutMs: 200 },
   );
-});
 
-// Timer-based: use short timeouts + wait helper
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+  const protocol = new FakeProtocol();
+  bridge.registerServerHandlers(protocol as never);
 
-test('triggers after timeout', async () => {
-  guard.start(() => true);
-  await wait(80);
-  assert.strictEqual(triggered, true);
+  const permissionPromise = protocol.invoke(
+    "session/request_permission",
+    100,
+    { /* params */ },
+  );
+
+  await bridge.approveToolCall(100, "allow");
+
+  const resolved = await permissionPromise;
+  assert.deepStrictEqual(resolved, { outcome: { outcome: "selected", optionId: "allow-once" } });
 });
 ```
 
 **Error Testing:**
 ```typescript
-// Assert error is thrown
-await assert.rejects(
-  coordinator.ensureConnected(baseRunOptions()),
-  /forced failure on session\/new/,
-);
+test("classifyAppErrorCode detects missing session", () => {
+  assert.strictEqual(
+    classifyAppErrorCode('[JSON-RPC -32600] Invalid request (data: {"details":"Session not found: stale-1"})'),
+    'MISSING_SESSION',
+  );
+});
 
-// Assert error does NOT propagate (no-op)
-assert.doesNotThrow(() => guard.markActivity(null));
+test("normalizeErrorMessage falls back for empty Error message", () => {
+  assert.strictEqual(
+    normalizeErrorMessage(new Error(''), 'fallback'),
+    'fallback',
+  );
+});
 ```
 
-**State Mutation Verification:**
+**Immutability Testing:**
 ```typescript
-// Immutability: freeze original, verify new object returned
-Object.freeze(original);
-Object.freeze(original.blocks);
-const updated = applyChunkToMessage(original, chunk);
-assert.notStrictEqual(updated, original);
-assert.strictEqual(original.blocks.length, 0);  // unchanged
-assert.strictEqual(updated.blocks.length, 1);   // new copy changed
+test("appendToAssistantMessage uses immutable updates and preserves previous snapshot", () => {
+  const memento = new FakeMemento({ /* initial */ });
+  const store = new ConversationStore(memento as any, () => {});
+  store.newConversation();
+
+  const oldSnapshot = store.getPersistedState();
+  store.appendToAssistantMessage("", { chunkType: "text", content: "Hello" });
+  const newSnapshot = store.getPersistedState();
+
+  // State reference changed (immutable update)
+  assert.notStrictEqual(oldSnapshot, newSnapshot);
+  // But original preserved
+  assert.strictEqual(oldSnapshot.conversations[0].messages[0].content, "");
+});
 ```
 
-**Testing Discriminated Unions:**
+**Callback Verification:**
 ```typescript
-// Filter by type, then cast
-const phases = messages
-  .filter((m): m is Extract<ExtensionMessage, { type: 'streamStatus' }> => m.type === 'streamStatus')
-  .map((m) => m.phase);
-assert.deepStrictEqual(phases, ['preparing', 'connecting', 'waiting_first_chunk']);
+test("batchUpdate emits a single state change notification", () => {
+  let notifyCount = 0;
+  const store = new ConversationStore(memento as any, () => {
+    notifyCount++;
+  });
+  
+  store.batchUpdate(() => {
+    store.newConversation();
+    store.setModel("GPT-4");
+    store.appendUserMessage("Hi");
+  });
+
+  // Single callback despite three mutations
+  assert.strictEqual(notifyCount, 1);
+});
 ```
 
-**Test Hooks for Internal State:**
-Some classes expose test-only methods marked with comments:
-```typescript
-// Backward-compat test hook.
-getPendingInteractionsForTests(): Map<number, PendingInteraction> {
-  return this.pendingInteractions;
-}
-```
-These are used directly in tests: `assert.strictEqual(bridge.getPendingInteractionsForTests().size, 0)`
+## Test Execution Details
+
+**Compilation:**
+- TypeScript compiled before test: `npm run compile-tests`
+- Output: `out/test/**/*.test.js` (CommonJS)
+- Source maps enabled: `src/**/*.ts` maps to `out/**/*.js`
+
+**VSCode Shim Loading:**
+- Mocha runs with `--require ./test/unit/vscode-shim.js`
+- Patches `require('vscode')` before any test module loads
+- Allows all imports of vscode to resolve to mock
+
+**Test Execution:**
+- Mocha TDD UI: `suite()` and `test()` functions
+- Sequential execution within suites
+- All tests must pass for CI success
+
+## Missing Test Coverage Areas
+
+**Known gaps:**
+- Webview rendering: No DOM tests (would need JSDOM/Puppeteer)
+- Real E2E UI flows: No integration with actual VS Code UI
+- Error edge cases: Some error paths untested in real failure scenarios
+- Platform-specific: Windows path handling not fully exercised in test matrix
 
 ---
 
