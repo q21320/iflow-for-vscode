@@ -4,7 +4,16 @@ import { IDEContext } from '../protocol';
 
 export class IDEContextService {
   static build(maxSelectionChars: number): IDEContext {
-    const editor = vscode.window.activeTextEditor;
+    let editor = vscode.window.activeTextEditor;
+    
+    // If no active text editor (e.g., focus is on Niren panel), try to get the first visible text editor
+    if (!editor) {
+      const visibleEditors = vscode.window.visibleTextEditors;
+      if (visibleEditors.length > 0) {
+        editor = visibleEditors.find(e => e.document.uri.scheme === 'file') || visibleEditors[0];
+      }
+    }
+    
     const context: IDEContext = { activeFile: null, selection: null };
 
     if (editor && editor.document.uri.scheme === 'file') {

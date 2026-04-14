@@ -4,6 +4,7 @@ import type {
   IDEContext,
   RoundFileChangeSummary,
 } from "../src/protocol";
+import { MODELS } from "../src/protocol";
 import type { StreamStatusSnapshot } from "../src/streamStatusUtils";
 import type {
   PendingConfirmation,
@@ -23,6 +24,8 @@ export class AppState {
   showConversationPanel = false;
   conversationSearch = "";
   showModeMenu = false;
+
+  models: string[] = [...MODELS];
 
   ideContext: IDEContext = { activeFile: null, selection: null };
   ideContextDismissed: IDEContextDismissed = {

@@ -171,6 +171,14 @@ export class AppMessageRouter {
         this.deps.updateIDEContextChips();
         break;
       }
+
+      case "configurationChanged": {
+        if (message.models) {
+          appState.models = message.models;
+          this.deps.render();
+        }
+        break;
+      }
     }
   }
 }

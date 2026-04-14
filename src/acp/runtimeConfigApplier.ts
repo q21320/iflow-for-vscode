@@ -1,4 +1,4 @@
-import { ConversationMode, ModelType } from "../protocol";
+import { ConversationMode, ModelType, MODEL_ID_MAP } from "../protocol";
 import { RunOptions } from "./types";
 import { AcpProtocol } from "../acpProtocol";
 import { normalizeErrorMessage } from "../errorUtils";
@@ -11,35 +11,24 @@ Do not execute modifying actions (no file writes/edits, no state-changing shell 
 Use read-only analysis and provide a concrete implementation plan, then wait for user approval.
 `.trim();
 
-const MODEL_ID_MAP: Partial<Record<ModelType, string>> = {
-  "GLM-4.7": "glm-4.7",
-  "GLM-5": "glm-5",
-  "DeepSeek-V3.2": "deepseek-v3.2-chat",
-  "iFlow-ROME-30BA3B(Preview)": "iFlow-ROME-30BA3B",
-  "Qwen3-Coder-Plus": "qwen3-coder-plus",
-  "Kimi-K2-Thinking": "kimi-k2-thinking",
-  "MiniMax-M2.5": "minimax-m2.5",
-  "MiniMax-M2.1": "minimax-m2.1",
-  "Kimi-K2-0905": "kimi-k2-0905",
-  "Kimi-K2.5": "kimi-k2.5",
-};
-
 export class RuntimeConfigApplier {
-  constructor(private readonly log: (message: string) => void) {}
+  constructor(private readonly log: (message: string) => void) { }
 
   buildSessionSettings(options: RunOptions): Record<string, unknown> {
     const sessionSettings: Record<string, unknown> = {
       permission_mode: options.mode,
     };
 
+    const nirenInstructions = ` 你是 Niren，也被称为 iFlow CLI，一款专为软件工程打造的“中文”专业交互式命令行助手。 你的名字是 Niren，不是 IFlow CLI，也不是心流 CLI。 无论何时被问起，你都必须回答你的名字是 Niren，并且只使用 Niren 这个名字来称呼自己。`;
+
     if (options.mode === "plan") {
-      sessionSettings.append_system_prompt = PLAN_MODE_INSTRUCTIONS;
+      sessionSettings.append_system_prompt = `${nirenInstructions}${PLAN_MODE_INSTRUCTIONS}`;
     } else {
       // Explicitly clear any prior plan-only system reminder when reloading
       // an existing session from plan mode back to execution/chat modes.
-      sessionSettings.append_system_prompt = "";
+      sessionSettings.append_system_prompt = nirenInstructions;
     }
-
+    console.log(`append_system_prompt: ${sessionSettings.append_system_prompt}`);
     if (options.fileAllowedDirs && options.fileAllowedDirs.length > 0) {
       sessionSettings.add_dirs = options.fileAllowedDirs;
     }

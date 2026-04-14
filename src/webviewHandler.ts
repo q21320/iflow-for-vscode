@@ -7,6 +7,7 @@ import {
   ExtensionMessage,
   AttachedFile,
   IDEContext,
+  updateModelsConfig,
 } from "./protocol";
 import { CliStatusService } from "./webview/cliStatusService";
 import { PlanModeOrchestrator } from "./webview/planModeOrchestrator";
@@ -122,6 +123,10 @@ export class WebviewHandler {
   ) {
     this.extensionUri = extensionUri;
     this.deps = { ...createDefaultDeps(), ...deps };
+    
+    // 初始化模型配置
+    this.initializeModelsConfig();
+    
     this.client = new AcpClient();
     this.store = new ConversationStore(globalState, (state) => {
       this.postMessage({ type: "stateUpdated", state });
@@ -234,6 +239,20 @@ export class WebviewHandler {
         this.client.clearAutoDetectCache();
         this.cliStatusService.invalidateCache();
         await this.checkCliAvailability(true);
+      }
+      
+      // Update models configuration when relevant settings change
+      if (
+        e.affectsConfiguration("iflow.models") ||
+        e.affectsConfiguration("iflow.modelContextSizes") ||
+        e.affectsConfiguration("iflow.modelIdMap")
+      ) {
+        this.initializeModelsConfig();
+        // Notify webview of configuration change with updated models
+        this.postMessage({ 
+          type: "configurationChanged",
+          models: this.deps.getConfig<string[]>("models", ["qwen3.5:0.8b"]) 
+        });
       }
     });
     this.disposables.push(configDisposable);
@@ -492,6 +511,14 @@ export class WebviewHandler {
     this.outputChannel?.dispose();
     this.outputChannel = null;
     this.webview = null;
+  }
+
+  private initializeModelsConfig(): void {
+    const models = this.deps.getConfig<string[]>("models", ["qwen3.5:0.8b"]);
+    const modelContextSizes = this.deps.getConfig<Record<string, number>>("modelContextSizes", { "qwen3.5:0.8b": 256000 });
+    const modelIdMap = this.deps.getConfig<Record<string, string>>("modelIdMap", { "qwen3.5:0.8b": "qwen3.5:0.8b" });
+    
+    updateModelsConfig(models, modelContextSizes, modelIdMap);
   }
 
   private debug(message: string): void {

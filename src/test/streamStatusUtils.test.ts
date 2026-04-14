@@ -5,17 +5,17 @@ suite('streamStatusUtils', () => {
   test('formatStreamStatusText always returns Flowing text', () => {
     assert.strictEqual(
       formatStreamStatusText({ phase: 'preparing', elapsedMs: 120 }),
-      'Flowing...',
+      'Nirening...',
     );
     assert.strictEqual(
       formatStreamStatusText({ phase: 'connecting', elapsedMs: 330 }),
-      'Flowing...',
+      'Nirening...',
     );
     assert.strictEqual(
       formatStreamStatusText({ phase: 'waiting_first_chunk', elapsedMs: 1800 }),
-      'Flowing...',
+      'Nirening...',
     );
-    assert.strictEqual(formatStreamStatusText(null), 'Flowing...');
+    assert.strictEqual(formatStreamStatusText(null), 'Nirening...');
   });
 
   test('reduceStreamStatus clears status on stream chunk/end/error and when streaming stops', () => {

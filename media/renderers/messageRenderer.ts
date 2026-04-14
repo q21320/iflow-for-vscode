@@ -10,16 +10,16 @@ export function renderMessages(
   conversation: Conversation | null,
   isStreaming: boolean,
   faviconUri: string,
-  pendingStatusText = "Flowing...",
+  pendingStatusText = "Nirening...",
 ): string {
   if (!conversation || conversation.messages.length === 0) {
     return `
       <div class="messages" id="messages-container">
         <div class="empty-state">
-          <div class="logo"><img src="${faviconUri}" alt="IFlow" class="logo-icon" /></div>
-          <h2>Welcome to IFlow</h2>
-          <p>Start a conversation by typing a message below.</p>
-          <p class="hint">Use / for commands, @ to mention files</p>
+          <div class="logo"><img src="${faviconUri}" alt="Niren 助手" class="logo-icon" /></div>
+          <h2>欢迎使用 Niren 助手</h2>
+          <p>开始对话</p>
+          <p class="hint">使用 / @ 提及文件</p>
         </div>
       </div>
     `;
@@ -39,7 +39,7 @@ function renderMessage(message: Message): string {
   return `
     <div class="message ${isUser ? "user" : "assistant"}">
       <div class="message-header">
-        <span class="role">${isUser ? "You" : "IFlow"}</span>
+        <span class="role">${isUser ? "你" : "Niren 助手"}</span>
         <span class="timestamp">${formatTime(message.timestamp)}</span>
       </div>
       ${
@@ -203,7 +203,7 @@ function renderPlanBlock(
 
 export function renderPendingIndicator(
   faviconUri: string,
-  statusText = "Flowing...",
+  statusText = "Nirening...",
 ): string {
   return `
     <div class="pending-indicator">

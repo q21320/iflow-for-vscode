@@ -28,7 +28,7 @@ export function renderQuestionStage(stageEl: HTMLElement, state: QuestionPanelSt
   if (!question) {
     const empty = document.createElement('div');
     empty.className = 'question-empty';
-    empty.textContent = 'No questions to answer. Press Esc to cancel.';
+    empty.textContent = '没有题目了。按 Esc 键取消。';
     stageEl.appendChild(empty);
     return;
   }

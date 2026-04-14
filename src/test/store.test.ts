@@ -310,7 +310,7 @@ suite("ConversationStore", () => {
     const current = store.getCurrentConversation();
     assert.ok(current);
     assert.strictEqual(current?.messages.length, 0);
-    assert.strictEqual(current?.title, "New Conversation");
+    assert.strictEqual(current?.title, "新建对话");
     assert.strictEqual(current?.sessionId, undefined);
   });
 

@@ -31,7 +31,7 @@ export function updateConversationById<TState extends { conversations: Conversat
 export function deriveConversationTitle(content: string): string {
   const firstLine = content.split('\n')[0].trim();
   if (firstLine.length <= 50) {
-    return firstLine || 'New Conversation';
+    return firstLine || '新建对话';
   }
   return firstLine.substring(0, 47) + '...';
 }

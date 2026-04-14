@@ -22,6 +22,10 @@ const extensionConfig = {
   externals: {
     vscode: 'commonjs vscode' // the vscode-module is created on-the-fly and must be excluded
   },
+  node: {
+    __dirname: false,
+    __filename: false
+  },
   resolve: {
     // support reading TypeScript and JavaScript files
     extensions: ['.ts', '.js']

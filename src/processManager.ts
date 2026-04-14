@@ -161,37 +161,129 @@ export class ProcessManager {
   ): Promise<ManualStartInfo | null> {
     const logFn = this.logInfo;
 
+    console.log("[IFlow] 开始解析 iflow CLI 启动模式");
+    this.log("开始解析 iflow CLI 启动模式");
+
     // Tier 1: User-configured nodePath (uses cached CLI path lookup)
     if (config.nodePath) {
-      this.log(`Using user-configured nodePath: ${config.nodePath}`);
+      console.log(`[IFlow] 使用用户配置的 nodePath: ${config.nodePath}`);
+      this.log(`使用用户配置的 nodePath: ${config.nodePath}`);
       const iflowPath = await this.findIFlowPathCached();
       if (!iflowPath) {
+        console.log("[IFlow] 未找到 iflow CLI，请先安装");
+        this.log("未找到 iflow CLI，请先安装");
         throw new Error("iFlow CLI not found. Please install iFlow CLI first.");
       }
       const iflowScript = resolveIFlowScriptCrossPlatform(iflowPath, logFn);
       if (!iflowScript) {
+        console.log("[IFlow] 无法从包装器解析 iFlow CLI 脚本路径");
+        this.log("无法从包装器解析 iFlow CLI 脚本路径");
         throw new Error(
           "Failed to resolve iFlow CLI script path from wrapper.",
         );
       }
+      console.log(`[IFlow] 使用用户配置的 nodePath: ${config.nodePath}，iflowScript: ${iflowScript}`);
+      this.log(`使用用户配置的 nodePath: ${config.nodePath}，iflowScript: ${iflowScript}`);
       return { nodePath: config.nodePath, iflowScript, port: config.port };
     }
 
-    // Tier 2: Auto-detect from iflow CLI location
+    // Tier 2: Check for local iflow-cli in node_modules
+    console.log("[IFlow] 检查本地 node_modules 中的 iflow-cli");
+    this.log("检查本地 node_modules 中的 iflow-cli");
+    const localIFlowPath = this.findLocalIFlowPath();
+    if (localIFlowPath) {
+      console.log(`[IFlow] 找到本地 iflow-cli: ${localIFlowPath}`);
+      this.log(`找到本地 iflow-cli: ${localIFlowPath}`);
+      // Try to find node executable in system path
+      console.log("[IFlow] 尝试查找系统 node 可执行文件");
+      this.log("尝试查找系统 node 可执行文件");
+      const nodePath = this.findSystemNodePath();
+      if (nodePath) {
+        console.log(`[IFlow] 使用系统 node: ${nodePath}`);
+        this.log(`使用系统 node: ${nodePath}`);
+        console.log(`[IFlow] 返回本地 iflow-cli 启动信息: nodePath=${nodePath}, iflowScript=${localIFlowPath}, port=${config.port}`);
+        this.log(`返回本地 iflow-cli 启动信息: nodePath=${nodePath}, iflowScript=${localIFlowPath}, port=${config.port}`);
+        return {
+          nodePath: nodePath,
+          iflowScript: localIFlowPath,
+          port: config.port,
+        };
+      } else {
+        console.log("[IFlow] 未找到系统 node 可执行文件");
+        this.log("未找到系统 node 可执行文件");
+      }
+    } else {
+      console.log("[IFlow] 未找到本地 iflow-cli");
+      this.log("未找到本地 iflow-cli");
+    }
+
+    // Tier 3: Auto-detect from iflow CLI location
+    console.log("[IFlow] 尝试自动检测 iflow CLI 位置");
+    this.log("尝试自动检测 iflow CLI 位置");
     const autoDetected = await this.autoDetectNodePath();
     if (autoDetected) {
-      this.log(`Using auto-detected node: ${autoDetected.nodePath}`);
+      console.log(`[IFlow] 使用自动检测的 node: ${autoDetected.nodePath}`);
+      this.log(`使用自动检测的 node: ${autoDetected.nodePath}`);
+      console.log(`[IFlow] 返回自动检测的启动信息: nodePath=${autoDetected.nodePath}, iflowScript=${autoDetected.iflowScript}, port=${config.port}`);
+      this.log(`返回自动检测的启动信息: nodePath=${autoDetected.nodePath}, iflowScript=${autoDetected.iflowScript}, port=${config.port}`);
       return {
         nodePath: autoDetected.nodePath,
         iflowScript: autoDetected.iflowScript,
         port: config.port,
       };
+    } else {
+      console.log("[IFlow] 自动检测 iflow CLI 位置失败");
+      this.log("自动检测 iflow CLI 位置失败");
     }
 
-    // Tier 3: No manual start path available.
+    // Tier 4: No manual start path available.
+    console.log("[IFlow] 无法从用户配置或自动检测中获取启动路径");
     this.log(
-      "No manual node path available from user config or auto-detection",
+      "无法从用户配置或自动检测中获取启动路径",
     );
+    return null;
+  }
+
+  private findSystemNodePath(): string | null {
+    const isWindows = process.platform === "win32";
+    const nodeExe = isWindows ? "node.exe" : "node";
+    const path = require('path');
+
+    // Try to find node in PATH
+    try {
+      const cp = require('child_process');
+      const result = isWindows
+        ? cp.execSync('where node', { timeout: 5000, encoding: 'utf8' })
+        : cp.execSync('which node', { timeout: 5000, encoding: 'utf8' });
+
+      const nodePath = result.trim().split(/\r?\n/)[0];
+      if (nodePath) {
+        return nodePath;
+      }
+    } catch (error: unknown) {
+      this.logInfo(`Failed to find node in PATH: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // Try common node locations
+    const commonPaths = isWindows
+      ? [
+        path.join(process.env.ProgramFiles || '', 'nodejs', 'node.exe'),
+        path.join(process.env.LOCALAPPDATA || '', 'Programs', 'nodejs', 'node.exe'),
+        path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Programs', 'nodejs', 'node.exe')
+      ]
+      : [
+        '/usr/local/bin/node',
+        '/opt/homebrew/bin/node',
+        '/usr/bin/node',
+        '/bin/node'
+      ];
+
+    for (const candidate of commonPaths) {
+      if (require('fs').existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
     return null;
   }
 
@@ -406,7 +498,7 @@ export class ProcessManager {
           if (!started) {
             this.log(
               `[process ready] WebSocket connection confirmed on port ${effectivePort} ` +
-                `after ${readiness.attempts} attempt(s)`,
+              `after ${readiness.attempts} attempt(s)`,
             );
             settleResolve();
           }
@@ -491,8 +583,111 @@ export class ProcessManager {
     if (this._cachedIflowPath !== undefined) {
       return this._cachedIflowPath;
     }
+
+    // First try: use local iflow-cli from node_modules
+    const localIFlowPath = this.findLocalIFlowPath();
+    if (localIFlowPath) {
+      this.logInfo(`[Local discovery] found iflow CLI in node_modules: ${localIFlowPath}`);
+      this._cachedIflowPath = localIFlowPath;
+      return this._cachedIflowPath;
+    }
+
+    // Fallback: search in PATH
     this._cachedIflowPath = await findIFlowPathCrossPlatform(this.logInfo);
     return this._cachedIflowPath;
+  }
+
+  private findLocalIFlowPath(): string | null {
+    const path = require('path');
+    const fs = require('fs');
+
+    console.log(`[IFlow] __dirname: ${__dirname}`);
+    console.log(`[IFlow] 当前工作目录: ${process.cwd()}`);
+
+    // Try to find the extension root directory
+    let extensionRoot = __dirname;
+    // Move up until we find the package.json file
+    for (let i = 0; i < 5; i++) {
+      const packageJsonPath = path.join(extensionRoot, 'package.json');
+      if (fs.existsSync(packageJsonPath)) {
+        console.log(`[IFlow] 找到扩展根目录: ${extensionRoot}`);
+        break;
+      }
+      extensionRoot = path.join(extensionRoot, '..');
+    }
+
+    // Check for local iflow-cli in src/lib
+    const libPath = path.join(extensionRoot, 'scripts', 'lib',  '@iflow-ai', 'iflow-cli', 'bundle','iflow.js');
+    console.log(`[IFlow] 正在检查 src/lib 中的 iflow-cli 路径: ${libPath}`);
+    this.logInfo(`正在检查 src/lib 中的 iflow-cli 路径: ${libPath}`);
+    if (fs.existsSync(libPath)) {
+      console.log(`[IFlow] 找到本地 iflow-cli 在 src/lib: ${libPath}`);
+      this.logInfo(`找到本地 iflow-cli 在 src/lib: ${libPath}`);
+      return libPath;
+    } else {
+      console.log(`[IFlow] src/lib 中的 iflow-cli 路径不存在: ${libPath}`);
+    }
+
+    // Check for local iflow-cli in node_modules
+    const localPath = path.join(extensionRoot, 'scripts', 'lib',  '@iflow-ai', 'iflow-cli', 'bundle', 'iflow.js');
+    console.log(`[IFlow] 正在检查本地 iflow-cli 路径: ${localPath}`);
+    this.logInfo(`正在检查本地 iflow-cli 路径: ${localPath}`);
+    if (fs.existsSync(localPath)) {
+      console.log(`[IFlow] 找到本地 iflow-cli: ${localPath}`);
+      this.logInfo(`找到本地 iflow-cli: ${localPath}`);
+      return localPath;
+    } else {
+      console.log(`[IFlow] 本地 iflow-cli 路径不存在: ${localPath}`);
+    }
+
+    // Check for iflow.cmd on Windows
+    if (process.platform === 'win32') {
+      const cmdPath = path.join(extensionRoot, 'scripts', 'lib', '.bin', 'iflow.cmd');
+      console.log(`[IFlow] 正在检查本地 iflow.cmd 路径: ${cmdPath}`);
+      this.logInfo(`正在检查本地 iflow.cmd 路径: ${cmdPath}`);
+      if (fs.existsSync(cmdPath)) {
+        console.log(`[IFlow] 找到本地 iflow.cmd: ${cmdPath}`);
+        this.logInfo(`找到本地 iflow.cmd: ${cmdPath}`);
+        return cmdPath;
+      } else {
+        console.log(`[IFlow] 本地 iflow.cmd 路径不存在: ${cmdPath}`);
+      }
+      const ps1Path = path.join(extensionRoot, 'scripts', 'lib', '.bin', 'iflow.ps1');
+      console.log(`[IFlow] 正在检查本地 iflow.ps1 路径: ${ps1Path}`);
+      this.logInfo(`正在检查本地 iflow.ps1 路径: ${ps1Path}`);
+      if (fs.existsSync(ps1Path)) {
+        console.log(`[IFlow] 找到本地 iflow.ps1: ${ps1Path}`);
+        this.logInfo(`找到本地 iflow.ps1: ${ps1Path}`);
+        return ps1Path;
+      } else {
+        console.log(`[IFlow] 本地 iflow.ps1 路径不存在: ${ps1Path}`);
+      }
+    } else {
+      // Check for iflow executable on Unix-like systems
+      const unixPath = path.join(extensionRoot, 'scripts', 'lib', '.bin', 'iflow');
+      console.log(`[IFlow] 正在检查本地 iflow 路径: ${unixPath}`);
+      this.logInfo(`正在检查本地 iflow 路径: ${unixPath}`);
+      if (fs.existsSync(unixPath)) {
+        console.log(`[IFlow] 找到本地 iflow: ${unixPath}`);
+        this.logInfo(`找到本地 iflow: ${unixPath}`);
+        return unixPath;
+      } else {
+        console.log(`[IFlow] 本地 iflow 路径不存在: ${unixPath}`);
+      }
+    }
+
+    // Try specific path based on user's feedback
+    const userPath = path.join(extensionRoot, 'scripts', 'lib', '.bin', 'iflow.cmd');
+    console.log(`[IFlow] 正在检查用户提供的路径: ${userPath}`);
+    if (fs.existsSync(userPath)) {
+      console.log(`[IFlow] 找到本地 iflow-cli 在用户提供的路径: ${userPath}`);
+      this.logInfo(`找到本地 iflow-cli 在用户提供的路径: ${userPath}`);
+      return userPath;
+    }
+
+    console.log('[IFlow] 在 node_modules 中未找到本地 iflow-cli');
+    this.logInfo('在 node_modules 中未找到本地 iflow-cli');
+    return null;
   }
 
   private createDefaultWebSocket(

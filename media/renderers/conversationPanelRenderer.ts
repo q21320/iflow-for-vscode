@@ -41,7 +41,7 @@ export function renderConversationPanel(opts: {
   return `
     <div class="conversation-panel ${showPanel ? '' : 'hidden'}" id="conversation-panel" role="dialog" aria-label="Conversation list">
       <div class="conversation-panel-search">
-        <input type="text" id="conversation-search" placeholder="Search sessions..." value="${escapeAttr(search)}" aria-label="Search conversations" />
+        <input type="text" id="conversation-search" placeholder="搜索会话..." value="${escapeAttr(search)}" aria-label="Search conversations" />
       </div>
       <div class="conversation-panel-list" role="listbox" aria-label="Conversations">
         ${groups.length === 0 ? '<div class="conversation-panel-empty">No conversations found</div>' : ''}
@@ -58,11 +58,11 @@ export function renderConversationPanel(opts: {
               <div class="conversation-item-info">
                 <div class="conversation-item-title">${escapeHtml(c.title)}</div>
                 <div class="conversation-item-meta">
-                  <span>${c.messages.length} messages</span>
+                  <span>${c.messages.length} 条消息</span>
                 </div>
               </div>
               <span class="conversation-item-time">${timeAgo(c.updatedAt, now)}</span>
-              <button class="conversation-item-delete" data-delete-id="${c.id}" title="Delete" aria-label="Delete conversation ${escapeAttr(c.title)}">&times;</button>
+              <button class="conversation-item-delete" data-delete-id="${c.id}" title="删除"  aria-label="Delete conversation ${escapeAttr(c.title)}">&times;</button>
             </div>
           `).join('')}
         `).join('')}

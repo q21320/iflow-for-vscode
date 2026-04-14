@@ -6,19 +6,19 @@ export function renderApprovalPanel(conf: PendingConfirmation): string {
   const toolLabel = escapeHtml(conf.toolName);
   return `
     <div class="composer approval-panel" role="dialog" aria-label="Tool approval">
-      <div class="approval-question">Allow <strong>${toolLabel}</strong>?</div>
+      <div class="approval-question">允许 <strong>${toolLabel}</strong>?</div>
       <div class="approval-options">
         <button class="approval-option" data-approval="allow" aria-label="Allow this action">
           <span class="approval-key">1</span>
-          <span class="approval-label">Yes</span>
+          <span class="approval-label">允许</span>
         </button>
         <button class="approval-option" data-approval="alwaysAllow" aria-label="Allow all edits for this session">
           <span class="approval-key">2</span>
-          <span class="approval-label">Yes, allow all edits this session</span>
+          <span class="approval-label">允许本次会话中的所有编辑操作</span>
         </button>
         <button class="approval-option" data-approval="reject" aria-label="Reject this action">
           <span class="approval-key">3</span>
-          <span class="approval-label">No</span>
+          <span class="approval-label">拒绝</span>
         </button>
         <div class="approval-option feedback-option">
           <span class="approval-key">4</span>
@@ -26,12 +26,12 @@ export function renderApprovalPanel(conf: PendingConfirmation): string {
             type="text"
             id="approval-feedback-input"
             class="approval-feedback-input"
-            placeholder="Tell IFlow what to do instead..."
+            placeholder="改为告知 Niren 该如何操作..."
             aria-label="Approval feedback"
           />
         </div>
       </div>
-      <div class="approval-hint">Esc to cancel</div>
+      <div class="approval-hint">按 Esc 键取消</div>
     </div>
   `;
 }
@@ -60,13 +60,13 @@ export function renderQuestionPanel(pq: PendingQuestion): string {
           type="button"
           data-nav-idx="${submitNavIndex}"
         >
-          Submit answers
+          提交答案
         </button>
       </div>
       <div class="question-stage"></div>
       <div class="question-review"></div>
       <div class="question-submit-error"></div>
-      <div class="approval-hint question-hint">Enter to select · Left/Right to switch question · Esc to cancel</div>
+      <div class="approval-hint question-hint">按回车键选择・左右方向键切换题目・按 Esc 键取消</div>
     </div>
   `;
 }
@@ -78,32 +78,32 @@ export function renderPlanApprovalPanel(pp: PendingPlanApproval): string {
 
   return `
     <div class="composer plan-approval-panel" data-request-id="${pp.requestId}" role="dialog" aria-label="Plan approval">
-      <div class="plan-approval-question">Approve this plan?</div>
+      <div class="plan-approval-question">允许此计划?</div>
       ${planContentHtml}
       <div class="approval-options">
         <button class="approval-option" data-plan-option="smart" aria-label="Approve plan and use smart mode edits">
           <span class="approval-key">1</span>
-          <span class="approval-label">Yes, and use smart mode edits</span>
+          <span class="approval-label">是的，并使用智能模式编辑</span>
         </button>
         <button class="approval-option" data-plan-option="default" aria-label="Approve plan and require manual edit approvals">
           <span class="approval-key">2</span>
-          <span class="approval-label">Yes, and manually approve edits</span>
+          <span class="approval-label">是的，手动审批编辑</span>
         </button>
         <button class="approval-option" data-plan-option="keep" aria-label="Keep planning">
           <span class="approval-key">3</span>
-          <span class="approval-label">No, keep planning</span>
+          <span class="approval-label">继续规划</span>
         </button>
         <div class="approval-option plan-feedback-option">
           <span class="approval-key">4</span>
           <input
             type="text"
             class="approval-feedback-input plan-feedback-input"
-            placeholder="Tell iFlow what to do instead..."
+            placeholder="改为告知 Niren 该如何操作..."
             aria-label="Plan feedback"
           />
         </div>
       </div>
-      <div class="approval-hint">Esc to keep planning</div>
+      <div class="approval-hint">按 Esc 键继续规划</div>
     </div>
   `;
 }

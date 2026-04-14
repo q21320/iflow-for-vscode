@@ -69,9 +69,12 @@ export class AcpProtocol {
       ...(params !== undefined ? { params } : {}),
     };
 
+    this.log(`[Request] Sending ${method} with id ${id}: ${JSON.stringify(request)}`);
+
     return new Promise<unknown>((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject });
       this.transport.send(JSON.stringify(request)).catch((err: unknown) => {
+        this.log(`[Request] Failed to send ${method} with id ${id}: ${err instanceof Error ? err.message : String(err)}`);
         this.pendingRequests.delete(id);
         reject(err instanceof Error ? err : new Error(String(err)));
       });
@@ -188,8 +191,10 @@ export class AcpProtocol {
       this.pendingRequests.delete(id);
 
       if (message.error) {
+        this.log(`[Response] Received error for request id=${id}: ${this.formatJsonRpcError(message.error)}`);
         pending.reject(new Error(this.formatJsonRpcError(message.error)));
       } else {
+        this.log(`[Response] Received result for request id=${id}: ${JSON.stringify(message.result)}`);
         pending.resolve(message.result);
       }
       return;

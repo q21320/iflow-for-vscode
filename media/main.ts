@@ -111,6 +111,7 @@ class IFlowApp implements AppHost {
       },
       getWorkspaceFolders: () => this.appState.state?.workspaceFolders ?? [],
       isMultiRoot: () => this.appState.state?.isMultiRoot ?? false,
+      getModels: () => this.appState.models,
     });
 
     this.messageRouter = new AppMessageRouter({
@@ -240,6 +241,10 @@ class IFlowApp implements AppHost {
     }
   }
 
+  getModels(): string[] {
+    return this.appState.models;
+  }
+
   private handleMessage(message: ExtensionMessage): void {
     this.updateSubagentProgress(message);
     this.messageRouter.handle(message);
@@ -261,7 +266,7 @@ class IFlowApp implements AppHost {
       : undefined;
     const title = conversation
       ? escapeHtml(conversation.title)
-      : "No conversations";
+      : "暂无对话";
     const conversationPanelHtml = renderConversationPanel({
       conversations: this.appState.state?.conversations || [],
       search: this.appState.conversationSearch,
@@ -302,6 +307,7 @@ class IFlowApp implements AppHost {
             this.appState.getWorkspaceFolderName(conversation),
           isMultiRoot: this.appState.state?.isMultiRoot ?? false,
           roundFileChanges,
+          models: this.appState.models,
         })}
       </div>
     `;

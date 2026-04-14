@@ -5,7 +5,7 @@ export function renderTopBar(title: string, conversationPanelHtml: string, showC
         <button
           id="conversation-trigger"
           class="conversation-trigger"
-          title="Switch conversation"
+          title="切换对话"
           aria-label="Switch conversation"
           aria-haspopup="listbox"
           aria-expanded="${showConversationPanel ? 'true' : 'false'}"
@@ -17,7 +17,7 @@ export function renderTopBar(title: string, conversationPanelHtml: string, showC
         ${conversationPanelHtml}
       </div>
       <div class="toolbar">
-         <button id="new-conversation-top-btn" class="icon-btn" title="New Chat" aria-label="Start new conversation">
+         <button id="new-conversation-top-btn" class="icon-btn" title="新建对话框" aria-label="Start new conversation">
            <span class="icon">+</span>
          </button>
       </div>

@@ -34,5 +34,5 @@ export function reduceStreamStatus(
 }
 
 export function formatStreamStatusText(_status: StreamStatusSnapshot | null): string {
-  return 'Flowing...';
+  return 'Nirening...';
 }

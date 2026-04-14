@@ -804,10 +804,12 @@ select:focus-visible,
 
 /* Composer - Floating Design */
 .composer {
-  position: absolute;
-  bottom: var(--spacing-lg);
-  left: 50%;
-  transform: translateX(-50%);
+  /* position: absolute; */
+  /* bottom: var(--spacing-lg); */
+  /* left: 50%; */
+  /* transform: translateX(-50%); */
+  margin: auto;
+  margin-bottom: 15px;
   width: calc(100% - 32px);
   max-width: 1200px;
   background:

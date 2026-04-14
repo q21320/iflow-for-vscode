@@ -2,36 +2,28 @@ import type { OutputBlock } from "./stream";
 
 export type ConversationMode = "default" | "yolo" | "plan" | "smart";
 
-export const MODELS = [
-  "GLM-4.7",
-  "GLM-5",
-  "DeepSeek-V3.2",
-  "iFlow-ROME-30BA3B(Preview)",
-  "Qwen3-Coder-Plus",
-  "Kimi-K2-Thinking",
-  "MiniMax-M2.5",
-  "MiniMax-M2.1",
-  "Kimi-K2-0905",
-  "Kimi-K2.5",
-] as const;
-
+// 模型配置
+export let MODELS = ["qwen3.5:0.8b"] as const;
 export type ModelType = (typeof MODELS)[number];
 
 export const DEFAULT_CONTEXT_SIZE = 128000;
 
 // Context window sizes per model (from iFlow CLI's model configuration)
-export const MODEL_CONTEXT_SIZES: Record<ModelType, number> = {
-  "GLM-4.7": 200000,
-  "GLM-5": 200000,
-  "DeepSeek-V3.2": 128000,
-  "iFlow-ROME-30BA3B(Preview)": 256000,
-  "Qwen3-Coder-Plus": 256000,
-  "Kimi-K2-Thinking": 256000,
-  "MiniMax-M2.5": 128000,
-  "MiniMax-M2.1": 128000,
-  "Kimi-K2-0905": 256000,
-  "Kimi-K2.5": 262144,
+export let MODEL_CONTEXT_SIZES: Record<ModelType, number> = {
+  "qwen3.5:0.8b": 256000,
 };
+
+// 模型ID映射
+export let MODEL_ID_MAP: Partial<Record<ModelType, string>> = {
+  "qwen3.5:0.8b": "qwen3.5:0.8b",
+};
+
+// 更新模型配置
+export function updateModelsConfig(models: string[], contextSizes: Record<string, number>, idMap: Record<string, string>): void {
+  MODELS = models as unknown as typeof MODELS;
+  MODEL_CONTEXT_SIZES = contextSizes as unknown as Record<ModelType, number>;
+  MODEL_ID_MAP = idMap as unknown as Partial<Record<ModelType, string>>;
+}
 
 // Attached file
 export interface AttachedFile {

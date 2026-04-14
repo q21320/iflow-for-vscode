@@ -1,16 +1,15 @@
 import type { ConversationMode, ModelType, Conversation, WebviewMessage } from '../src/protocol';
-import { MODELS } from '../src/protocol';
 
 const SLASH_COMMANDS = [
-  { command: '/', description: 'Show all commands' },
-  { command: '/new', description: 'Start a new conversation' },
-  { command: '/clear', description: 'Clear current conversation' },
-  { command: '/compact', description: 'Compress conversation context' },
-  { command: '/mode', description: 'Change conversation mode' },
-  { command: '/think', description: 'Toggle thinking mode' },
-  { command: '/model', description: 'Change model' },
-  { command: '/workspace', description: 'Switch workspace folder' },
-  { command: '/help', description: 'Show help' }
+  { command: '/', description: '显示所有命令' },
+  { command: '/new', description: '开始新对话' },
+  { command: '/clear', description: '清除当前对话' },
+  { command: '/compact', description: '压缩对话上下文' },
+  { command: '/mode', description: '切换对话模式' },
+  { command: '/think', description: '切换思考模式' },
+  { command: '/model', description: '切换模型' },
+  { command: '/workspace', description: '切换工作空间' },
+  { command: '/help', description: '显示帮助' }
 ];
 
 interface SlashMenuHost {
@@ -20,6 +19,7 @@ interface SlashMenuHost {
   onSlashMenuClosed(): void;
   getWorkspaceFolders(): Array<{ uri: string; name: string }>;
   isMultiRoot(): boolean;
+  getModels(): string[];
 }
 
 export class SlashMenuController {
@@ -181,7 +181,7 @@ export class SlashMenuController {
       const currentModel = this.host.getCurrentConversation()?.model ?? 'GLM-4.7';
       return [
         { label: '←', description: 'Back to commands', value: 'back', action: 'back' },
-        ...(MODELS as readonly string[]).map(m => ({
+        ...this.host.getModels().map(m => ({
           label: m,
           description: m === currentModel ? '✓ Current' : '',
           value: m,
@@ -192,10 +192,10 @@ export class SlashMenuController {
     if (this.mode === 'modes') {
       const currentMode = this.host.getCurrentConversation()?.mode ?? 'default';
       const modes = [
-        { value: 'default', label: 'Chat', desc: 'Normal conversation' },
-        { value: 'yolo', label: 'YOLO', desc: 'Auto-approve actions' },
-        { value: 'plan', label: 'Plan', desc: 'Plan before executing' },
-        { value: 'smart', label: 'Smart', desc: 'AI-driven edits' },
+        { value: 'default', label: 'Chat', desc: '日常对话' },
+        { value: 'yolo', label: 'YOLO', desc: '自动审批操作' },
+        { value: 'plan', label: 'Plan', desc: '计划执行' },
+        { value: 'smart', label: 'Smart', desc: 'AI驱动编辑' },
       ];
       return [
         { label: '←', description: 'Back to commands', value: 'back', action: 'back' },

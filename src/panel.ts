@@ -21,7 +21,7 @@ export class IFlowPanel {
     // Otherwise, create a new panel beside the current editor (right side)
     const panel = vscode.window.createWebviewPanel(
       IFlowPanel.viewType,
-      "IFlow",
+      "Niren",
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,

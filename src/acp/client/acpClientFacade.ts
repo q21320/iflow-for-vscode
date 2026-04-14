@@ -260,9 +260,9 @@ export class AcpClient {
 
   /** Update the API base URL in iFlow CLI's settings file. */
   updateIFlowCliApiConfig(_baseUrl: string | undefined): void {
-    this.settingsRepository.updateBaseUrl(
-      getConfig<string | null>("baseUrl", null),
-    );
+    const baseUrl = getConfig<string | null>("baseUrl", null);
+    this.log(`[API Config] Updating base URL to: ${baseUrl}`);
+    this.settingsRepository.updateBaseUrl(baseUrl);
   }
 
   // ── Private helpers ─────────────────────────────────────────────────

@@ -84,7 +84,7 @@ export class ConversationService {
     const current = this.getCurrentConversation();
     const conversation: Conversation = {
       id: createConversationId(),
-      title: "New Conversation",
+      title: "新建对话",
       messages: [],
       mode: "default",
       think: current?.think ?? false,
@@ -149,7 +149,7 @@ export class ConversationService {
     const updated = this.updateCurrentConversation((conversation) => ({
       ...conversation,
       messages: [],
-      title: "New Conversation",
+      title: "新建对话",
       sessionId: undefined,
       updatedAt: Date.now(),
     }));

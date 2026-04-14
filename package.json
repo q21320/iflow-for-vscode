@@ -1,8 +1,8 @@
 {
-  "name": "iflow-for-vscode",
+  "name": "Niren-for-vscode",
   "publisher": "YauMike",
-  "displayName": "IFlow for VS Code",
-  "description": "Bring IFlow (iflow CLI) into VS Code: chat panel, commands, and editor-group lock.",
+  "displayName": "Niren for VS Code",
+  "description": "Bring Niren (niren CLI) into VS Code: chat panel, commands, and editor-group lock.",
   "version": "0.1.6",
   "repository": "https://github.com/xsw632/iflow-for-vscode.git",
   "homepage": "https://github.com/xsw632/iflow-for-vscode",
@@ -28,7 +28,7 @@
     "commands": [
       {
         "command": "iflow-for-vscode.openPanel",
-        "title": "IFlow: Open Panel",
+        "title": "Niren: Open Panel",
         "icon": {
           "light": "media/iflow_favicon.svg",
           "dark": "media/iflow_favicon.svg"
@@ -36,7 +36,7 @@
       },
       {
         "command": "iflow-for-vscode.lockGroup",
-        "title": "IFlow: Lock Editor Group",
+        "title": "Niren: Lock Editor Group",
         "icon": "$(lock)"
       }
     ],
@@ -44,14 +44,14 @@
       "activitybar": [
         {
           "id": "iflow-container",
-          "title": "IFlow",
+          "title": "Niren",
           "icon": "media/iflow_favicon.svg"
         }
       ],
       "secondarySidebar": [
         {
           "id": "iflow-container-secondary",
-          "title": "IFlow",
+          "title": "Niren",
           "icon": "media/iflow_favicon.svg"
         }
       ]
@@ -61,7 +61,7 @@
         {
           "type": "webview",
           "id": "iflow-sidebar",
-          "name": "IFlow",
+          "name": "Niren",
           "icon": "media/iflow_favicon.svg"
         }
       ],
@@ -69,7 +69,7 @@
         {
           "type": "webview",
           "id": "iflow-sidebar-secondary",
-          "name": "IFlow",
+          "name": "Niren",
           "icon": "media/iflow_favicon.svg"
         }
       ]
@@ -83,7 +83,7 @@
       ]
     },
     "configuration": {
-      "title": "IFlow",
+      "title": "Niren",
       "properties": {
         "iflow.nodePath": {
           "type": [
@@ -98,8 +98,8 @@
             "string",
             "null"
           ],
-          "default": null,
-          "description": "Optional base URL for the OpenAI-compatible API endpoint (e.g. https://apis.iflow.cn/v1). Only set this if you need the extension to override the CLI's configured endpoint."
+          "default": "http://192.155.1.141:11434/v1",
+          "description": "Optional base URL for the OpenAI-compatible API endpoint (e.g. http://192.155.1.141:11434/v1). Only set this if you need the extension to override the CLI's configured endpoint."
         },
         "iflow.oauthClientId": {
           "type": "string",
@@ -134,17 +134,17 @@
         "iflow.maxFileBytes": {
           "type": "number",
           "default": 80000,
-          "description": "Maximum file size in bytes for attached files"
+          "description": "最大文件大小（字节）用于附加文件"
         },
         "iflow.autoIncludeWorkspaceFiles": {
           "type": "boolean",
           "default": false,
-          "description": "Whether to include workspace file list in every prompt. Disabled by default for faster first-token latency."
+          "description": "是否在每个提示中包含工作空间文件列表。默认禁用，以获得更快的第一个令牌延迟。"
         },
         "iflow.workspaceFilesLimit": {
           "type": "number",
           "default": 80,
-          "description": "Maximum number of workspace files to include when iflow.autoIncludeWorkspaceFiles is enabled."
+          "description": "当启用iflow.autoIncludeWorkspaceFiles时，包含的工作空间文件数量的上限。"
         },
         "iflow.streamRenderIntervalMs": {
           "type": "number",
@@ -165,6 +165,24 @@
           "type": "number",
           "default": 300000,
           "description": "Timeout in milliseconds for sub-agent inactivity detection. If no notifications arrive from the CLI for this duration during a tool call, the operation is cancelled and the main agent is informed. Set to 0 to disable. Default: 300000 (300 seconds)."
+        },
+        "iflow.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["qwen3.5:0.8b"],
+          "description": "List of available models"
+        },
+        "iflow.modelContextSizes": {
+          "type": "object",
+          "default": {"qwen3.5:0.8b": 256000},
+          "description": "Context window sizes per model"
+        },
+        "iflow.modelIdMap": {
+          "type": "object",
+          "default": {"qwen3.5:0.8b": "qwen3.5:0.8b"},
+          "description": "Model ID mapping"
         }
       }
     }
@@ -182,7 +200,8 @@
     "test:real-cli": "node scripts/run-real-cli-unit-test.mjs",
     "test:coverage": "npm run compile-tests && c8 --reporter=text --reporter=json-summary mocha --ui tdd --require ./test/unit/vscode-shim.js \"out/test/**/*.test.js\"",
     "coverage:check": "npm run test:coverage && node scripts/check-coverage.mjs",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "vspackage": "vsce package"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -194,6 +213,7 @@
     "c8": "^9.1.0",
     "eslint": "^9.39.2",
     "mocha": "^11.7.4",
+    "path-browserify": "^1.0.1",
     "ts-loader": "^9.5.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.52.0",
@@ -201,6 +221,7 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
+    "@iflow-ai/iflow-cli": "^0.5.18",
     "ws": "^8.18.0"
   }
 }

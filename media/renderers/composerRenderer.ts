@@ -4,7 +4,6 @@ import type {
   IDEContext,
   RoundFileChangeSummary,
 } from "../../src/protocol";
-import { MODELS } from "../../src/protocol";
 import { escapeHtml } from "../markdownRenderer";
 import { escapeAttr } from "../webviewUtils";
 import type {
@@ -32,19 +31,19 @@ function renderModePopup(
     <div class="mode-popup ${showModeMenu ? "" : "hidden"}" id="mode-popup" role="listbox" aria-label="Conversation mode options">
       <div class="mode-option ${mode === "default" ? "active" : ""}" data-mode="default" role="option" tabindex="0" aria-selected="${mode === "default" ? "true" : "false"}">
         <span class="mode-option-label">Chat</span>
-        <span class="mode-option-desc">Normal conversation</span>
+        <span class="mode-option-desc">日常对话</span>
       </div>
       <div class="mode-option ${mode === "yolo" ? "active" : ""}" data-mode="yolo" role="option" tabindex="0" aria-selected="${mode === "yolo" ? "true" : "false"}">
         <span class="mode-option-label">YOLO</span>
-        <span class="mode-option-desc">Auto-approve actions</span>
+        <span class="mode-option-desc">自动审批操作</span>
       </div>
       <div class="mode-option ${mode === "plan" ? "active" : ""}" data-mode="plan" role="option" tabindex="0" aria-selected="${mode === "plan" ? "true" : "false"}">
         <span class="mode-option-label">Plan</span>
-        <span class="mode-option-desc">Plan before executing</span>
+        <span class="mode-option-desc">计划执行前审批</span>
       </div>
       <div class="mode-option ${mode === "smart" ? "active" : ""}" data-mode="smart" role="option" tabindex="0" aria-selected="${mode === "smart" ? "true" : "false"}">
         <span class="mode-option-label">Smart</span>
-        <span class="mode-option-desc">AI-driven edits</span>
+        <span class="mode-option-desc">AI驱动的编辑</span>
       </div>
       <div class="mode-popup-divider"></div>
       <div
@@ -116,6 +115,7 @@ export function renderComposer(opts: {
   cwd?: string;
   workspaceFolderName?: string;
   isMultiRoot: boolean;
+  models: string[];
 }): string {
   if (opts.pendingConfirmation) {
     return renderApprovalPanel(opts.pendingConfirmation);
@@ -145,7 +145,7 @@ export function renderComposer(opts: {
           <div class="input-wrapper">
           <textarea
             id="message-input"
-            placeholder="Message iFlow..."
+            placeholder="向 Niren 发送..."
             rows="1"
             aria-label="Message input"
           ></textarea>
@@ -195,8 +195,8 @@ export function renderComposer(opts: {
            ${isThinking ? '<span class="thinking-chip">🧠 Thinking</span>' : ""}
            <div class="status-item">
              <select id="model-select" class="dropdown-mini" title="Select Model" aria-label="Select model">
-               ${MODELS.map(
-                 (m) => `
+               ${opts.models.map(
+                 (m: any) => `
                  <option value="${m}" ${currentModel === m ? "selected" : ""}>${m}</option>
                `,
                ).join("")}
