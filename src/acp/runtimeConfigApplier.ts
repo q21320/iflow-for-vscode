@@ -19,16 +19,14 @@ export class RuntimeConfigApplier {
       permission_mode: options.mode,
     };
 
-    const nirenInstructions = ` 你是 Niren，也被称为 iFlow CLI，一款专为软件工程打造的“中文”专业交互式命令行助手。 你的名字是 Niren，不是 IFlow CLI，也不是心流 CLI。 无论何时被问起，你都必须回答你的名字是 Niren，并且只使用 Niren 这个名字来称呼自己。`;
-
     if (options.mode === "plan") {
-      sessionSettings.append_system_prompt = `${nirenInstructions}${PLAN_MODE_INSTRUCTIONS}`;
+      sessionSettings.append_system_prompt = PLAN_MODE_INSTRUCTIONS;
     } else {
       // Explicitly clear any prior plan-only system reminder when reloading
       // an existing session from plan mode back to execution/chat modes.
-      sessionSettings.append_system_prompt = nirenInstructions;
+      sessionSettings.append_system_prompt = "";
     }
-    console.log(`append_system_prompt: ${sessionSettings.append_system_prompt}`);
+
     if (options.fileAllowedDirs && options.fileAllowedDirs.length > 0) {
       sessionSettings.add_dirs = options.fileAllowedDirs;
     }

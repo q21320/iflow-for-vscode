@@ -1,6 +1,6 @@
 {
   "name": "Niren-for-vscode",
-  "publisher": "YauMike",
+  "publisher": "i吃肉的77",
   "displayName": "Niren for VS Code",
   "description": "Bring Niren (niren CLI) into VS Code: chat panel, commands, and editor-group lock.",
   "version": "0.1.6",
@@ -91,7 +91,7 @@
             "null"
           ],
           "default": null,
-          "description": "Path to the Node.js executable (v22+). Required if your default Node version is too old. Example: ~/.nvm/versions/node/v22.0.0/bin/node"
+          "description": "Node.js 可执行文件路径（v22 及以上版本）。若你的默认 Node 版本过低，则为必填项。示例：~/.nvm/versions/node/v22.0.0/bin/node"
         },
         "iflow.baseUrl": {
           "type": [
@@ -99,37 +99,37 @@
             "null"
           ],
           "default": "http://192.155.1.141:11434/v1",
-          "description": "Optional base URL for the OpenAI-compatible API endpoint (e.g. http://192.155.1.141:11434/v1). Only set this if you need the extension to override the CLI's configured endpoint."
+          "description": "可选的 OpenAI 兼容 API 终端点基础 URL。仅在需要覆盖 OpenAI 兼容 API 终端点时设置。示例：http://192.155.1.141:11434/v1). Only set this if you need the extension to override the CLI's configured endpoint."
         },
         "iflow.oauthClientId": {
           "type": "string",
           "default": "10009311001",
-          "description": "OAuth client id used for iFlow login (PKCE public client)."
+          "description": "PKCE 公共客户端 ID，用于登录。"
         },
         "iflow.oauthRequestTimeoutMs": {
           "type": "number",
           "default": 10000,
-          "description": "Timeout in milliseconds for OAuth HTTPS requests (token exchange, refresh, and user info)."
+          "description": "OAuth HTTPS 请求（令牌交换、刷新及用户信息获取）的超时时间，单位为毫秒。"
         },
         "iflow.port": {
           "type": "number",
           "default": 8090,
-          "description": "Port for iFlow CLI WebSocket server"
+          "description": "Niren  CLI WebSocket 服务器端口。"
         },
         "iflow.timeout": {
           "type": "number",
           "default": 60000,
-          "description": "Connection timeout in milliseconds"
+          "description": "连接超时时间，单位为毫秒。"
         },
         "iflow.enableCliStream": {
           "type": "boolean",
           "default": true,
-          "description": "Start iFlow CLI with --stream for incremental response chunks. Disable only if your CLI/runtime has compatibility issues."
+          "description": "使用 --stream 参数启动 Niren  CLI 以获取增量响应片段。仅当你的命令行界面 / 运行环境存在兼容性问题时，才禁用该参数。"
         },
         "iflow.interactionTimeoutMs": {
           "type": "number",
           "default": 120000,
-          "description": "Timeout in milliseconds for pending permission/question/plan interactions."
+          "description": "待处理的权限 / 问题 / 计划交互超时时间（单位：毫秒）。"
         },
         "iflow.maxFileBytes": {
           "type": "number",
@@ -144,27 +144,27 @@
         "iflow.workspaceFilesLimit": {
           "type": "number",
           "default": 80,
-          "description": "当启用iflow.autoIncludeWorkspaceFiles时，包含的工作空间文件数量的上限。"
+          "description": "当启用niren.autoIncludeWorkspaceFiles时，包含的工作空间文件数量的上限。"
         },
         "iflow.streamRenderIntervalMs": {
           "type": "number",
           "default": 50,
-          "description": "Streaming UI refresh interval in milliseconds. Lower values feel smoother but use more CPU; higher values reduce CPU use but update less frequently. Recommended range: 30-200ms."
+          "description": "流式界面刷新间隔（单位：毫秒）。数值越小，界面越流畅，但会占用更多 CPU 资源；数值越大，CPU 占用越低，但界面更新频率也会降低。推荐范围：30-200 毫秒。"
         },
         "iflow.debugLogging": {
           "type": "boolean",
           "default": false,
-          "description": "Enable debug logging"
+          "description": "是否启用调试日志记录。"
         },
         "iflow.debugSessionUpdateOnly": {
           "type": "boolean",
           "default": false,
-          "description": "Only show [ACP] session/update summary logs (with toolCallId) in the IFlow output channel (and debug console when debugLogging is enabled)."
+          "description": "是否在调试日志记录启用时，是否仅显示会话更新摘要日志（包含工具调用 ID）。在 Niren  输出通道中显示。"
         },
         "iflow.subagentInactivityTimeoutMs": {
           "type": "number",
           "default": 300000,
-          "description": "Timeout in milliseconds for sub-agent inactivity detection. If no notifications arrive from the CLI for this duration during a tool call, the operation is cancelled and the main agent is informed. Set to 0 to disable. Default: 300000 (300 seconds)."
+          "description": "子代理不活动检测超时时间（单位：毫秒）。如果在工具调用期间没有收到 Niren 的通知，则操作将被取消并通知主代理。默认值：300000（300 秒）。设置为 0 以禁用。"
         },
         "iflow.models": {
           "type": "array",
@@ -172,17 +172,17 @@
             "type": "string"
           },
           "default": ["qwen3.5:0.8b"],
-          "description": "List of available models"
+          "description": "可用模型列表。"
         },
         "iflow.modelContextSizes": {
           "type": "object",
           "default": {"qwen3.5:0.8b": 256000},
-          "description": "Context window sizes per model"
+          "description": "每个模型的上下文窗口大小。"
         },
         "iflow.modelIdMap": {
           "type": "object",
           "default": {"qwen3.5:0.8b": "qwen3.5:0.8b"},
-          "description": "Model ID mapping"
+          "description": "模型 ID 映射。"
         }
       }
     }

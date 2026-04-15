@@ -57,6 +57,7 @@ export class InteractionBridge {
   private readonly interactionTimeoutMs: number;
   private readonly enableLegacyQuestionBridge: boolean;
   private readonly enableLegacyPlanExitBridge: boolean;
+  private currentMode: string = "default";
 
   constructor(
     private readonly emitChunk: (chunk: StreamChunk) => void,
@@ -79,6 +80,10 @@ export class InteractionBridge {
 
     this.pendingInteractions.clear();
     this.createdAt.clear();
+  }
+
+  setMode(mode: string): void {
+    this.currentMode = mode;
   }
 
   // Backward-compat test hook.
@@ -108,6 +113,23 @@ export class InteractionBridge {
           toolParams.toolCall?.toolName ??
           toolParams.toolCall?.title ??
           "unknown";
+          
+        // In smart mode, auto-approve tool calls without showing confirmation
+        if (this.currentMode === "smart") {
+          const options = toolParams.options ?? [];
+          const optionId = this.pickPermissionOptionId(
+            options,
+            ["allow_once", "allow_always"]
+          );
+          
+          if (optionId) {
+            return { outcome: { outcome: "selected", optionId } };
+          } else {
+            return { outcome: { outcome: "cancelled" } };
+          }
+        }
+
+        // In other modes, show confirmation dialog
         this.emitChunk({
           chunkType: "tool_confirmation",
           requestId: id,

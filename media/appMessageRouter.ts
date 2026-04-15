@@ -173,7 +173,9 @@ export class AppMessageRouter {
       }
 
       case "configurationChanged": {
+        console.log("[Webview] Received configurationChanged message:", message);
         if (message.models) {
+          console.log("[Webview] Updating models to:", message.models);
           appState.models = message.models;
           this.deps.render();
         }

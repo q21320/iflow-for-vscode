@@ -22,6 +22,7 @@ export class JsonFileStore {
       const data = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
       this.cachedData = data;
       this.cachedMtimeMs = stat.mtimeMs;
+      console.log(`Read ${JSON.stringify(data)}`);
       return data;
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code;

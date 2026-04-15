@@ -1,4 +1,4 @@
-# IFlow for VS Code
+# Niren for VS Code
 
 将 `iflow` CLI 带到 VS Code：在侧边栏打开 IFlow 面板，快速呼出常用命令，并提供“锁定编辑器分组”能力，便于专注在一个固定区域进行对话与操作。
 

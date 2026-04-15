@@ -220,6 +220,15 @@ export class WebviewHandler {
     this.disposeListeners();
     this.webview = webview;
 
+    // Re-initialize models config and send to webview
+    this.initializeModelsConfig();
+    const models = this.deps.getConfig<string[]>("models", ["qwen3.5:0.8b"]);
+    this.debug(`[Models Config] Sending initial models to webview: ${JSON.stringify(models)}`);
+    this.postMessage({ 
+      type: "configurationChanged",
+      models: models 
+    });
+
     // Listen for messages from the webview
     const messageDisposable = webview.onDidReceiveMessage(
       (message: WebviewMessage) => this.handleMessage(message),
@@ -248,10 +257,12 @@ export class WebviewHandler {
         e.affectsConfiguration("iflow.modelIdMap")
       ) {
         this.initializeModelsConfig();
+        const models = this.deps.getConfig<string[]>("models", ["qwen3.5:0.8b"]);
+        this.debug(`[Models Config] Sending configurationChanged with models: ${JSON.stringify(models)}`);
         // Notify webview of configuration change with updated models
         this.postMessage({ 
           type: "configurationChanged",
-          models: this.deps.getConfig<string[]>("models", ["qwen3.5:0.8b"]) 
+          models: models 
         });
       }
     });
@@ -517,6 +528,10 @@ export class WebviewHandler {
     const models = this.deps.getConfig<string[]>("models", ["qwen3.5:0.8b"]);
     const modelContextSizes = this.deps.getConfig<Record<string, number>>("modelContextSizes", { "qwen3.5:0.8b": 256000 });
     const modelIdMap = this.deps.getConfig<Record<string, string>>("modelIdMap", { "qwen3.5:0.8b": "qwen3.5:0.8b" });
+    
+    this.debug(`[Models Config] Loaded models: ${JSON.stringify(models)}`);
+    this.debug(`[Models Config] Loaded modelContextSizes: ${JSON.stringify(modelContextSizes)}`);
+    this.debug(`[Models Config] Loaded modelIdMap: ${JSON.stringify(modelIdMap)}`);
     
     updateModelsConfig(models, modelContextSizes, modelIdMap);
   }

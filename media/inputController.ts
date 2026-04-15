@@ -55,14 +55,22 @@ export class InputController {
   }
 
   handleFileContents(files: AttachedFile[]): void {
-    const incomingByPath = new Map(files.map((file) => [file.path, file]));
     let changed = false;
 
     this.attachedFiles = this.attachedFiles.map((current) => {
-      const incoming = incomingByPath.get(current.path);
+      // Try to find matching file by path (exact match first)
+      let incoming = files.find(f => f.path === current.path);
+      
+      // If no exact match, try to find by filename
+      if (!incoming) {
+        const currentFileName = getFileName(current.path);
+        incoming = files.find(f => getFileName(f.path) === currentFileName);
+      }
+      
       if (!incoming) {
         return current;
       }
+      
       changed = true;
       return {
         ...current,

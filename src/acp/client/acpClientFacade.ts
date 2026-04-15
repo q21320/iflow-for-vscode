@@ -198,6 +198,9 @@ export class AcpClient {
     onEnd: () => void,
     onError: (error: string) => void,
   ): Promise<string | undefined> {
+    // Update interaction bridge with current mode for auto-approval
+    this.interactionBridge.setMode(options.mode);
+    
     return this.runExecutor.run(options, {
       onChunk,
       onEnd,
